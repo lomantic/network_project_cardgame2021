@@ -44,12 +44,9 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: tcp_client hostname port\n");
         return 1;
     }
-    char userinput[20];
-    printf("type ID");
-    
 
-    char username[]="Miranda";
-    char password[]="3f574fwwe";
+    char username[]="nanemickel";
+    char password[]="00eknglse";
 
     printf("address : %s\n",argv[1]);
     printf("port : %s\n",argv[2]);
@@ -130,11 +127,11 @@ int main(int argc, char** argv) {
                     printf("server asked your ID & PW \n");
                     char sendIDPW[3+strlen(username)+1+strlen(password)+5];
                     //!^!username+password!^!\\n + null
-                    strcpy(sendIDPW,"!^!");
+                    strcpy(sendIDPW,"!*!");
                     strcat(sendIDPW,username);
                     strcat(sendIDPW,"+");
                     strcat(sendIDPW,password);
-                    strcat(sendIDPW,"!^!\n");
+                    strcat(sendIDPW,"!*!\n");
                     send(socket_peer, sendIDPW, strlen(sendIDPW), 0);
                     printf("sent ID PW \n");
                     continue;

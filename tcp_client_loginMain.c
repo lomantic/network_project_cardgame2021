@@ -29,13 +29,27 @@
 #include <netdb.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
+#include <stdbool.h>
 
 #define ISVALIDSOCKET(s) ((s) >= 0)
 #define CLOSESOCKET(s) close(s)
 #define SOCKET int
 #define GETSOCKETERRNO() (errno)
+
+bool specialSymbolKiller(char userinput[]);
+int guaranteeData(char userinput[]);
+int askingPurpose();
+void askUsername(char *username);
+void askPassword(char *password);
+
+int submenu_myinfo();
+int submenu_cardgame();
+int submenu(int purpose);
+int menu();
 
 int main(int argc, char** argv) {
 
@@ -44,14 +58,29 @@ int main(int argc, char** argv) {
         fprintf(stderr, "usage: tcp_client hostname port\n");
         return 1;
     }
+//---login or account make----
+    
+    int purpose =0; //default 
+    int showMenu=0;
+    int actioncode=0;
+    char codeNumber[5];
+    char requestForserver[10];
+    
+    char purposeLogin[]="!*login*!\n";
+    char purposeAccount[]="!^creating account^!\n";
+    char userinput[20];
+    char *username;
+    char *password;
 
-    char username[]="nanemickel";
-    char password[]="00eknglse";
 
+    // while loop until fetch proper purpose from user 
+    //1: login / 2: create 
+    purpose=askingPurpose();
+    askUsername(username);
+    askPassword(password);
+    
     printf("address : %s\n",argv[1]);
     printf("port : %s\n",argv[2]);
-    printf("username : %s \n",username);
-    printf("password : %s \n",password);
 
     printf("Configuring remote address...\n");
     struct addrinfo hints;
@@ -99,7 +128,20 @@ int main(int argc, char** argv) {
 
     freeaddrinfo(peer_address);
     while(1) {
-
+        if(showMenu==1){
+            actioncode= menu();
+            printf("request : %d \n",actioncode);
+            showMenu=0;
+            sprintf(codeNumber,"%d",actioncode);
+            strcpy(requestForserver,"=");
+            strcat(requestForserver,codeNumber);
+            strcat(requestForserver,"=\n");
+            printf("my request to server %s \n",requestForserver);
+            sleep(0.7);
+            send(socket_peer, requestForserver, strlen(requestForserver), 0);
+            system("clear");
+            continue;
+        }
         fd_set reads;
         FD_ZERO(&reads);
         FD_SET(socket_peer, &reads);
@@ -113,44 +155,93 @@ int main(int argc, char** argv) {
             fprintf(stderr, "select() failed. (%d)\n", GETSOCKETERRNO());
             return 1;
         }
-
+        //from server
         if (FD_ISSET(socket_peer, &reads)) {
             char read[4096];
             int bytes_received = recv(socket_peer, read, 4096, 0);
+            
+            //kill connnection
             if (bytes_received < 1 || (read[0]=='#' && read[bytes_received-2]=='#')) {
+                if(read[1]=='!' && read[bytes_received-3]=='!'){
+                    printf("%.*s \n",bytes_received, read);
+                    showMenu=1;
+                    continue;
+                }
                 printf("%.*s \n",bytes_received, read);
                 printf("Connection closed by server.\n");
                 break;
             }
-            if ((read[0]=='?' && read[bytes_received-2]=='?')){
+            // login : 0  create_account :1;
+            if ((read[0]=='?' && read[bytes_received-2]=='?')){  
                 if((read[1]=='^' && read[bytes_received-3]=='^')){
                     printf("server asked your ID & PW \n");
                     char sendIDPW[3+strlen(username)+1+strlen(password)+5];
                     //!^!username+password!^!\\n + null
-                    strcpy(sendIDPW,"!*!");
+                    if(purpose==1)
+                        strcpy(sendIDPW,"!*!"); //login form
+                    else
+                        strcpy(sendIDPW,"!^!"); //account form
                     strcat(sendIDPW,username);
                     strcat(sendIDPW,"+");
                     strcat(sendIDPW,password);
-                    strcat(sendIDPW,"!*!\n");
+                    if(purpose==1)
+                        strcat(sendIDPW,"!*!\n");
+                    else
+                        strcat(sendIDPW,"!^!\n");
                     send(socket_peer, sendIDPW, strlen(sendIDPW), 0);
+                    free(username);
+                    free(password);
                     printf("sent ID PW \n");
                     continue;
                 }
                 printf("server asked your purpose of connnection\n");
-                char myPurpose[]="!^creating account^!\n";
-                send(socket_peer, myPurpose, strlen(myPurpose), 0);
+                
+                if(purpose==1){
+                    send(socket_peer, purposeLogin, strlen(purposeLogin), 0);
+                }
+                else if(purpose==2){ 
+                    send(socket_peer, purposeAccount, strlen(purposeAccount), 0);
+                }
                 printf("sent purpose \n");
                 continue;
             }
-            else{
-            printf("Received (%d bytes): %.*s \n",
-                    bytes_received, bytes_received, read);
+            //information requset
+            if ((read[0]=='=' && read[bytes_received-2]=='=')){
+                if ((read[1]=='*' && read[bytes_received-3]=='*')){
+                    char *repassword;
+                    while(1){
+                        printf("=change password=\n");
+                        askPassword(password);
+                        printf("=new password recheck=\n");
+                        askPassword(repassword);
+                        if(!strcmp(password,repassword)){
+                            printf("pw confirmed.. \n");
+                            break;
+                        }
+                    }
+                    send(socket_peer, password, strlen(password), 0);
+
+                } 
+                if((read[1]=='?' && read[bytes_received-3]=='?')){
+                    printf("Are you sure? y/n >> ");
+                    while(1){
+                        fgets(userinput,sizeof userinput,stdin);
+                        if(userinput=='y')
+                    }
+                }
             }
+
+            printf("Received (%d bytes): %.*s \n",bytes_received, bytes_received, read);
+            
         }
 
+        //stdin
         if(FD_ISSET(0, &reads)) {
             char read[4096];
-            if (!fgets(read, 4096, stdin)) break;
+            if (!fgets(read, 4096, stdin)){ 
+                printf("FATAL ERROR >> unproper input\n");
+                break;
+            }
             printf("Sending: %s", read);
             int bytes_sent = send(socket_peer, read, strlen(read), 0);
             printf("Sent %d bytes.\n", bytes_sent);
@@ -164,3 +255,229 @@ int main(int argc, char** argv) {
     return 0;
 }
 
+
+
+int askingPurpose(){
+    char userinput[20];
+    int purpose=0;
+    printf("What do you want to do ?\n");
+    printf("[command List]\n");
+    printf("-Login          : 1\n");
+    printf("-Create Account : 2\n");
+
+    
+    while(1){
+    printf("Your command >> type number: ");
+    if(!fgets(userinput,sizeof userinput,stdin)){
+        printf("unproper input\n");
+        continue;
+        //printf("length of id and pw must be lower than 20\n");
+        //printf("special symbols not allowed\n only eng and numbers are allowed..\n");
+    }
+    else{
+        purpose= atoi(userinput);
+
+        if(purpose>0 &&purpose<3){
+            printf("your order >> %d confirmed \n",purpose);
+            return purpose;
+        }
+        else{
+            printf("unidentified order.. \n");
+            continue;
+        }
+    }
+    }
+}
+void askUsername(char *username){
+    char userinput[20];
+    
+    while(1){
+        printf("type username:");
+        fgets(userinput,sizeof userinput,stdin);
+        if(guaranteeData(userinput)){
+            printf("username : %s confirmed \n",userinput);
+            username=(char*)malloc((strlen(userinput)+1)*sizeof(char));
+            strcpy(username,userinput); 
+            break;
+        }
+    }
+}
+
+void askPassword(char *password){
+    char userinput[20];
+    while(1){
+        printf("type password:");
+        fgets(userinput,sizeof userinput,stdin);
+        if(guaranteeData(userinput)){
+            printf("password checking..\n");
+            password=(char*)malloc((strlen(userinput)+1)*sizeof(char));
+            strcpy(password,userinput); 
+            break;
+        }
+    }
+}
+
+
+
+int guaranteeData(char userinput[]){
+    
+    bool vaild=false;
+
+    if((strlen(userinput)<8 ) ||strlen(userinput)>16){
+        printf("unproper input\n");
+        printf("length of id and pw must be shorter than 15, longer than 6\n");
+        return 0;
+    }
+    else{
+        vaild=specialSymbolKiller(userinput);
+        if(vaild==false){
+            printf("special symbols not allowed\nonly eng and numbers are allowed..\n");
+            return 0;
+        }
+        else{
+            userinput[strlen(userinput)-1]='\0'; // erase '\n' 
+            return 1;
+        }
+    }
+    
+
+}
+
+bool specialSymbolKiller(char userinput[]){
+
+    int endIndex = strlen(userinput)-2;
+
+    for(int i=0; i<endIndex;i++){
+        if(isalpha(userinput[i])||isdigit(userinput[i]))
+            continue;
+        else{
+            printf("unproper letter <%c> detected \n",userinput[i]);
+            return false;
+        }
+    }
+    return true;
+}
+
+
+int menu(){
+    char userinput[20];
+    int purpose=0;
+    while(1){
+        sleep(0.7);
+        system("clear");
+        printf("==== MENU ====\n");
+        printf("[command List]\n");
+        printf("-start card game : 1\n");
+        printf("-my information  : 2\n");
+        printf("-shop            : 3\n");
+
+        while(1){
+            printf("Your command >> type number: ");
+            if(!fgets(userinput,sizeof userinput,stdin)){
+                printf("unproper input\n");
+                continue;
+                //printf("length of id and pw must be lower than 20\n");
+                //printf("special symbols not allowed\n only eng and numbers are allowed..\n");
+        }
+        else{
+            purpose= atoi(userinput);
+
+            if(purpose>0 &&purpose<4){
+                printf("your order >> %d confirmed \n",purpose);
+                return submenu(purpose);
+            }
+            else{
+                printf("unidentified order.. \n");
+                printf("returning to menu..\n");
+                break;
+            }
+        }
+        }
+    }
+
+
+}
+
+int submenu(int purpose){
+    switch(purpose){
+        case 1:
+            return submenu_cardgame();
+            break;
+        case 2:
+            return submenu_myinfo();
+            break;
+    }
+}
+
+int submenu_cardgame(){
+    char userinput[20];
+    int purpose=0;
+    while(1){
+        sleep(0.7);
+        system("clear");
+        printf("==== SUB MENU ====\n");
+        printf("[command List]\n");
+        printf("-match cardgame      : 1\n");
+        printf("-match with computer : 2\n");
+        
+        while(1){
+            printf("Your command >> type number: ");
+            if(!fgets(userinput,sizeof userinput,stdin)){
+                printf("unproper input\n");
+                continue;
+                //printf("length of id and pw must be lower than 20\n");
+                //printf("special symbols not allowed\n only eng and numbers are allowed..\n");
+        }
+        else{
+            purpose= atoi(userinput);
+            if(purpose>0 &&purpose<3){
+                printf("your order >> %d confirmed \n",purpose);
+                return purpose+100; // match code 101~102
+            }
+            else{
+                printf("unidentified order.. \n");
+                printf("returning to submenu..\n");
+                break;
+            }
+        }
+        }
+    }
+}
+
+
+int submenu_myinfo(){
+    char userinput[20];
+    int purpose=0;
+    while(1){
+        sleep(0.7);
+        system("clear");
+        printf("==== SUB MENU ====\n");
+        printf("[command List]\n");
+        printf("-Change password : 1\n");
+        printf("-Delete account  : 2\n");
+        printf("-Change title    : 3\n");
+        printf("-match history   : 4\n");
+        
+        while(1){
+            printf("Your command >> type number: ");
+            if(!fgets(userinput,sizeof userinput,stdin)){
+                printf("unproper input\n");
+                continue;
+                //printf("length of id and pw must be lower than 20\n");
+                //printf("special symbols not allowed\n only eng and numbers are allowed..\n");
+        }
+        else{
+            purpose= atoi(userinput);
+            if(purpose>0 &&purpose<5){
+                printf("your order >> %d confirmed \n",purpose);
+                return purpose+200; // info code 201~202
+            }
+            else{
+                printf("unidentified order.. \n");
+                printf("returning to submenu..\n");
+                break;
+            }
+        }
+        }
+    }
+}
