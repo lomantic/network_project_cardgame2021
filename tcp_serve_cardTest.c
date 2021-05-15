@@ -62,9 +62,10 @@ static int connectionEnd=0;
 
 int loginCheck(char read[] ,int bytes_received);
 int findDirectory(char username[]);
-void deleteDirectory(char username[]);
+
 void createDirectory(char username[]);
 int createAccount(char username[],char password[]);
+void deleteDirectory(int clientCode);
 //int checkIdData(char username[]);
 int checkLoginFile(char username[],char password[]);
 //int checkUserInfo(char *receviedData ,int dataLength);
@@ -73,14 +74,15 @@ void playerStore(int players[], int newcomer);
 void playerDelete(int players[], int goodbye);
 int changeTurn(int players[],int currentTurn);
 
+int clientIdxFinder(int clientCode);
 void requestSolver(int clientCode,char message[]);
-char* readExtracter(char read[],int bytes_received);
+void readExtracter(char read[],int bytes_received);
 int checkClientRequest(int clientCode);
-void storeRequestingClient(char specialRequestClient[],int client);
+void storeRequestingClient(int specialRequestClient[],int client);
 void storeUserinfo(char username[]);
 void deleteUserinfo(int userNumber);
 void storeUserPurpose(int userNumber,int purpose);
-static int rmfiles(const char *pathname,const struct stat *sbuf,int type, struct FTW *ftwb);
+
 
 static int totalPlayer=0;
 const static int playerlimit=4;
@@ -110,6 +112,7 @@ int main(int argc, char** argv) {
     currentUsers = malloc((sizeof(*currentUsers))*userlimit);
     for(int i=0;i<userlimit;i++){
         currentUsers[i].userNumber=-1; // default -1 means no client
+        currentUsers[i].currnetRequest=-1;
         //printf("[%d] num is : %d\n",i,currentUsers[i].userNumber); test code
     }
 
@@ -232,9 +235,11 @@ int main(int argc, char** argv) {
                     if (socket_client > max_socket)
                         max_socket = socket_client;
                     printf("connected.. \n");
+                    /*
                     playerStore(players,socket_client);
                     if(totalPlayer==0)
                         turn=players[0];
+                        */
                     totalPlayer++;
                     printf("player count : %d \n",totalPlayer);
                     //ask purpose of connection
@@ -270,13 +275,15 @@ int main(int argc, char** argv) {
                     //menu request detector client by client
                     request=checkClientRequest(clientCode);
                     if(request>0){
-                        char *requestFromClient=malloc(sizeof(char)*(bytes_received+1));
-                        strcpy(requestFromClient,readExtracter(read,bytes_received));
-                        requestSolver(clientCode,requestFromClient);
+                        readExtracter(read,bytes_received);
+                        //char *requestFromClient=malloc(sizeof(char)*(bytes_received+1));
+                        //strcpy(requestFromClient,readExtracter(read,bytes_received));
+                        requestSolver(clientCode,read);
                         // all request client by client
-                        free(requestFromClient);
+                        //free(requestFromClient);
                         continue;
                     }
+
                     //detect purpose
                     if(read[0]=='!' && read[bytes_received-2]=='!'){
                         purpose=0;// ! ~~ ! something for login for account
@@ -308,6 +315,7 @@ int main(int argc, char** argv) {
                             storeUserPurpose(clientCode,purpose);
                             send(i,pwRequest, strlen(pwRequest), 0);
                             purpose=-1; //situation disabled
+                            continue;
                         }
 
                         if(purpose==203){
@@ -322,12 +330,14 @@ int main(int argc, char** argv) {
                     if (bytes_received < 1) { 
                         printf("exit detected.. \n");
                         FD_CLR(i, &master);
+                        /*
                         if (turn==i){
                             turn=changeTurn(players,turn);
                         }
-                        deleteUserinfo(i);
-                        playerDelete(players, i);
                         
+                        playerDelete(players, i);
+                        */
+                        deleteUserinfo(i);
                         totalPlayer--;
                         printf("player count : %d \n",totalPlayer);
                         if(totalPlayer==0){
@@ -402,7 +412,7 @@ int main(int argc, char** argv) {
                         }
                     } // if purpose 0 in else
 
-
+                    /*    
                     // nomral
                     if(purpose== -1){
                         
@@ -420,6 +430,8 @@ int main(int argc, char** argv) {
                             turn=changeTurn(players,turn);
                         }
                     }
+                    */
+
                     SOCKET j; // send message to others
                     for (j = 1; j <= max_socket; ++j) {
                         if (FD_ISSET(j, &master)) {
@@ -481,36 +493,56 @@ int checkUserInfo(char *receviedData ,int dataLength){
 
 }
 */
-char* readExtracter(char read[],int bytes_received){
+void readExtracter(char read[],int bytes_received){
 
-    char tmp[bytes_received + 1];
+    char tmp[bytes_received+1];
     for(int i=0;i<bytes_received;i++){
         tmp[i]=read[i];
     }
-    tmp[bytes_received]='\0';
+    strcpy(read,tmp);
 
-    return tmp;
+    return ;
 }
+int clientIdxFinder(int clientCode){
+    for(int i=0;i<userlimit;i++){
+        if(currentUsers[i].userNumber==clientCode)
+            return i;
+    }
+}
+
 void requestSolver(int clientCode, char message[]){
-    int request = currentUsers[clientCode].currnetRequest;
+
+    int clientIdx = clientIdxFinder(clientCode);
+    int request = currentUsers[clientIdx].currnetRequest;
     //currentUsers[clientCode].currnetRequest=-1;// request solved
     if(request>200){
         //change password
         if(request==201){
             printf("password change new login file process active \n");
-            if(createAccount(currentUsers[clientCode].username,message)){
+            if(createAccount(currentUsers[clientIdx].username,message)){
                 printf("new login file creation success \n");
             }
             else{
                 printf("rewrite failed\n");
             }
-            currentUsers[clientCode].currnetRequest=-1;// request solved
+            currentUsers[clientIdx].currnetRequest=-1;// request solved
             return;
         }
         //delete account
         if(request==202){
-            
-            return;
+            if(message[0]=='y'||message[0]=='Y'){
+                printf("%s account >>delete process proceed \n",currentUsers[clientIdx].username);
+                deleteDirectory(clientCode);
+                char exit[]="#goodbye#\n";
+                send(clientCode,exit, strlen(exit), 0);
+                deleteUserinfo(clientCode);
+                return;
+            }
+            else{
+                printf("request <%d> from client :%d canceled\n",request,currentUsers[clientIdx].userNumber);
+                currentUsers[clientIdx].currnetRequest= -1;
+                return;
+            }
         }
 
 
@@ -520,14 +552,14 @@ int checkClientRequest(int clientCode){
 
     for(int i=0;i<userlimit;i++){
         if((currentUsers[i].userNumber==clientCode)&&(currentUsers[i].currnetRequest!=-1)){
-            printf("client : %d >> request %d still active\n",clientCode,currentUsers[i].currnetRequest);
-            return currentUsers[i],currnetRequest;
+            printf("client : %d >> current request : %d \n",clientCode,currentUsers[i].currnetRequest);
+            return currentUsers[i].currnetRequest;
         }
     }
     return 0;
 
 }
-void storeRequestingClient(char specialRequestClient[],int client){
+void storeRequestingClient(int specialRequestClient[],int client){
     for(int i=0;i<userlimit;i++){
         if(specialRequestClient[i]==-1){
             specialRequestClient[i]=client;
@@ -652,7 +684,11 @@ void createDirectory(char username[]){
     }
 
 }
-void deleteDirectory(char username[]){
+void deleteDirectory(int clientCode){
+
+    int idx=clientIdxFinder(clientCode);
+    char username[strlen(currentUsers[idx].username)+1];
+    strcpy(username,currentUsers[idx].username);
 
     char userData[]="./USER_DATA";
     char path[12+strlen(username)+1];//./USER_DATA/+ strlen(username)+null
@@ -660,19 +696,13 @@ void deleteDirectory(char username[]){
     strcat(path,"/");
     strcat(path,username);
     
-    if(nftw(path,rmfiles,10,FTW_MOUNT|FTW_DEPTH|FTW_PHYS)<0){
-        perror("ERROR NTFW\n");
-        exit(1);
-    }
-    printf("delete complete \n");
-    return;
-}
-static int rmfiles(const char *pathname,const struct stat *sbuf,int type, struct FTW *ftwb){
-    if(remove(pathname)){
-        perror("ERROR : REMOVE \n");
-        return -1;
-    }
-    return 0;
+    char deleteCommand[7+strlen(path)+1];//"rm -rf "+ path + null
+    strcpy(deleteCommand,"rm -rf ");
+    strcat(deleteCommand,path);
+    system(deleteCommand);
+    printf("%s >> file deleted \n",path);
+    return ;
+
 }
 int createAccount(char username[],char password[]){
     FILE *fptr;
@@ -824,6 +854,7 @@ void deleteUserinfo(int userNumber){
             printf("%s data in struct idx >> %d, usernumber : %d  deleting..\n",currentUsers[i].username,i,currentUsers[i].userNumber);
             free(currentUsers[i].username);
             currentUsers[i].userNumber=-1;
+            currentUsers[i].currnetRequest=-1;
             printf("deleted.. \n");
             return;
         }

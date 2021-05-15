@@ -69,14 +69,15 @@ int main(int argc, char** argv) {
     char purposeLogin[]="!*login*!\n";
     char purposeAccount[]="!^creating account^!\n";
     char userinput[20];
-    char *username;
-    char *password;
+    char username[20];
+    char password[20];
 
 
     // while loop until fetch proper purpose from user 
     //1: login / 2: create 
     purpose=askingPurpose();
     askUsername(username);
+
     askPassword(password);
     
     printf("address : %s\n",argv[1]);
@@ -160,7 +161,7 @@ int main(int argc, char** argv) {
             char read[4096];
             int bytes_received = recv(socket_peer, read, 4096, 0);
             
-            //kill connnection
+            //kill connnection or message from server
             if (bytes_received < 1 || (read[0]=='#' && read[bytes_received-2]=='#')) {
                 if(read[1]=='!' && read[bytes_received-3]=='!'){
                     printf("%.*s \n",bytes_received, read);
@@ -189,8 +190,6 @@ int main(int argc, char** argv) {
                     else
                         strcat(sendIDPW,"!^!\n");
                     send(socket_peer, sendIDPW, strlen(sendIDPW), 0);
-                    free(username);
-                    free(password);
                     printf("sent ID PW \n");
                     continue;
                 }
@@ -208,7 +207,7 @@ int main(int argc, char** argv) {
             //information requset
             if ((read[0]=='=' && read[bytes_received-2]=='=')){
                 if ((read[1]=='*' && read[bytes_received-3]=='*')){
-                    char *repassword;
+                    char repassword[20];
                     while(1){
                         printf("=change password=\n");
                         askPassword(password);
@@ -216,18 +215,44 @@ int main(int argc, char** argv) {
                         askPassword(repassword);
                         if(!strcmp(password,repassword)){
                             printf("pw confirmed.. \n");
+                            showMenu=1;
                             break;
                         }
                     }
                     send(socket_peer, password, strlen(password), 0);
-
+                    continue;
                 } 
                 if((read[1]=='?' && read[bytes_received-3]=='?')){
-                    printf("Are you sure? y/n >> ");
+                    char checkLastTime[10];
                     while(1){
-                        fgets(userinput,sizeof userinput,stdin);
-                        if(userinput=='y')
+                        printf("Are you sure? y/n >> ");
+                        
+                        if(!fgets(checkLastTime,sizeof checkLastTime,stdin)){
+                            printf("unproper value\n");
+                            sleep(1);
+                            system("clear");
+                            continue;
+                        }
+                        
+                        if(!strcmp(checkLastTime,"y\n")||!strcmp(checkLastTime,"Y\n")){
+                            printf("delete process activate.. \n");
+                            send(socket_peer, checkLastTime, strlen(checkLastTime), 0);
+                            break;
+                        }
+                        else if(!strcmp(checkLastTime,"n\n")||!strcmp(checkLastTime,"N\n")){
+                            send(socket_peer, checkLastTime, strlen(checkLastTime), 0);
+                            printf("canceled\n");
+                            showMenu=1;
+                            break;
+                        }
+                        else{
+                            printf("unvalid input\n");
+                            sleep(1);
+                            system("clear");
+                            continue;
+                        }
                     }
+                    continue;
                 }
             }
 
@@ -288,7 +313,7 @@ int askingPurpose(){
     }
     }
 }
-void askUsername(char *username){
+void askUsername(char username[]){
     char userinput[20];
     
     while(1){
@@ -296,28 +321,24 @@ void askUsername(char *username){
         fgets(userinput,sizeof userinput,stdin);
         if(guaranteeData(userinput)){
             printf("username : %s confirmed \n",userinput);
-            username=(char*)malloc((strlen(userinput)+1)*sizeof(char));
             strcpy(username,userinput); 
             break;
         }
     }
 }
 
-void askPassword(char *password){
+void askPassword(char password[]){
     char userinput[20];
     while(1){
         printf("type password:");
         fgets(userinput,sizeof userinput,stdin);
         if(guaranteeData(userinput)){
             printf("password checking..\n");
-            password=(char*)malloc((strlen(userinput)+1)*sizeof(char));
             strcpy(password,userinput); 
             break;
         }
     }
 }
-
-
 
 int guaranteeData(char userinput[]){
     
@@ -357,7 +378,6 @@ bool specialSymbolKiller(char userinput[]){
     }
     return true;
 }
-
 
 int menu(){
     char userinput[20];
@@ -443,7 +463,6 @@ int submenu_cardgame(){
         }
     }
 }
-
 
 int submenu_myinfo(){
     char userinput[20];

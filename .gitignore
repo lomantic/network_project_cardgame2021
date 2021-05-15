@@ -5,3 +5,4 @@ linkClientTestCreate.py
 tcp_client_createForPython.c
 *.exe
 USER_DATA/asdfghj/login
+USER_DATA/qwertyu/login
