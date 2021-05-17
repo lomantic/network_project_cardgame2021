@@ -52,10 +52,11 @@
 #define GETSOCKETERRNO() (errno)
 #define SEM_NAME "/Time"
 
+void *createCardGameRoom(void *roomNumber);
 void *waitingTimeOut();
 void signalDetection(int sig);
 static int start=0;
-static int connectionEnd=0;
+static int gameStart=0;
 static int totalWaitingPlayer=0;
 
 
@@ -72,10 +73,14 @@ void deleteDirectory(int clientCode);
 int checkLoginFile(char username[],char password[]);
 //int checkUserInfo(char *receviedData ,int dataLength);
 int saveUserInfo(char *receviedData ,int dataLength);
-void playerStore(int players[], int newcomer);
-void playerDelete(int players[], int goodbye);
+
+void storeClientInRoom(int roomNumber);
+void initializePlayerSet();
+void playerSetStore(int players[],int newcomer);
+void playerSetDelete(int players[], int goodbye);
 int changeTurn(int players[],int currentTurn);
 
+int checkClientPlayingCard(int client);
 int clientIdxFinder(int clientCode);
 void requestSolver(int clientCode,char message[]);
 void readExtracter(char read[],int bytes_received);
@@ -85,26 +90,42 @@ void storeUserinfo(char username[]);
 void deleteUserinfo(int userNumber);
 void storeUserPurpose(int userNumber,int purpose);
 
+
 void storeWaitingQueue(int client);
 int deleteWaitingQueue(int client);
+
 
 static int connectedClient=0;
 
 const static int playerlimit=4;
 const static int userlimit=10;
 
-static char waitingLine[10]; //sameas userlimit changed cuz of compile error
+static int waitingLine[10]; //sameas userlimit changed cuz of compile error
+static int currentPlayers[10]={0};//default all 0
+static int playerSets[4]={-1,-1,-1,-1}; // max player is 4 // -1 means no player
 
 static int clientCode=0;
 fd_set master;
+fd_set masterCard;// this is for thread
 
 typedef struct{
     int userNumber;
     char *username;
     int currnetRequest;
     char *title;
+    int playingStatus;
+    int room;
 }userData;
 static userData *currentUsers; 
+
+/*
+typedef struct{
+    int playerList[4]; // receive playerSets[4]
+    int roomNumber;
+}cardgamePlayers;
+static cardgamePlayers *playerSet;
+*/
+static int roomCount=0;
 
 typedef struct{
     char cardType; // R (red) G (green) B (blue) Y (yellow)
@@ -131,6 +152,8 @@ int main(int argc, char** argv) {
     for(int i=0;i<userlimit;i++){
         currentUsers[i].userNumber=-1; // default -1 means no client
         currentUsers[i].currnetRequest=-1;
+        currentUsers[i].playingStatus=0;
+        currentUsers[i].room=-1;
         waitingLine[i]=-1;
         //printf("[%d] num is : %d\n",i,currentUsers[i].userNumber); test code
     }
@@ -138,6 +161,8 @@ int main(int argc, char** argv) {
 
 
     //int specialRequestClient[userlimit];
+    int maxRoom=5;
+    pthread_t cardRoom[maxRoom];
     int players[4]={-1,-1,-1,-1};
     int turn=-1;
     int purpose=-1;
@@ -145,6 +170,11 @@ int main(int argc, char** argv) {
     char notYourTurn[]="it's not your turn please wait for your turn... \n";
     char askPurpose[]="?purpose?\n";
     
+    //initialize rooms
+    for(int i=0;i<maxRoom;i++){
+        cardRoom[i]=-1;
+    }
+    //create card deck
     totalCard = malloc((sizeof(*totalCard))*(totalCardStyle*totalCardType)); // 4*15 =60
     char totalCardTypeList[]={'R','G','B','Y'};
     char totalCardStyleList[]={'1','2','3','4','5','6','7','8','9','p','j','d','a','s','q'};
@@ -225,6 +255,34 @@ int main(int argc, char** argv) {
     while(1) {
         fd_set reads;
         reads = master;
+        
+        if(gameStart==1){
+            gameStart=0;
+            for(int i=0; i<maxRoom;i++){
+                if(cardRoom[i]==-1){
+                    roomCount++;
+                    
+                    //playerSet = malloc((sizeof(*playerSet)));
+                    //strcpy(playerSet->playerList, playerSets);
+                    //playerSet->roomNumber=roomCount;
+                    int *roomNumber =&roomCount;
+
+                    storeClientInRoom(*roomNumber);
+                    int statusRoom;
+                    printf("card room NO. %d created\n",*roomNumber);
+                    statusRoom=pthread_create(&cardRoom[i], NULL, createCardGameRoom, (void *)roomNumber);
+                    if(statusRoom==-1){
+                    	fprintf(stderr,"PThread  Creation Error \n");
+                    	exit(0);
+                    }
+                    pthread_detach(cardRoom[i]);
+
+                    //function to update user info and make thread
+                    break;
+                }
+            }
+            continue;
+        }
 
         if (select(max_socket+1, &reads, 0, 0, 0) < 0) {
             fprintf(stderr, "select() failed. (%d)\n", GETSOCKETERRNO());
@@ -234,8 +292,7 @@ int main(int argc, char** argv) {
         SOCKET i;
         SOCKET socket_client;
         for(i = 1; i <= max_socket; ++i) {
-            if (FD_ISSET(i, &reads)) {
-                
+            if (FD_ISSET(i, &reads)) {                
                 if (i == socket_listen ) {
                     struct sockaddr_storage client_address;
                     socklen_t client_len = sizeof(client_address);
@@ -268,7 +325,7 @@ int main(int argc, char** argv) {
                         max_socket = socket_client;
                     printf("connected.. \n");
                     /*
-                    playerStore(players,socket_client);
+                    playerSetStore(players,socket_client);
                     if(totalWaitingPlayer==0)
                         turn=players[0];
                         */
@@ -299,9 +356,45 @@ int main(int argc, char** argv) {
 
                 } 
                 else {
+
                     char read[1024];
                     int bytes_received = recv(i, read, 1024, 0);
                     int request=0;
+
+
+                    //client_exit
+                    if (bytes_received < 1) { 
+                        printf("exit detected.. \n");
+                        FD_CLR(i, &master);
+                        /*
+                        if (turn==i){
+                            turn=changeTurn(players,turn);
+                        }
+                    
+                        playerSetDelete(players, i);
+                        */
+                        int deletedWaitingQueue=0; 
+                        deleteUserinfo(i);
+                        deletedWaitingQueue=deleteWaitingQueue(i);
+                        if(deletedWaitingQueue){
+                            totalWaitingPlayer--;
+                        }
+                        connectedClient--;
+                        printf("player count : %d \n",connectedClient);
+                        if(connectedClient==0){
+                            
+                            start=0;
+                        }
+                        CLOSESOCKET(i);                          
+                        continue;
+                    }
+                    
+                    if(checkClientPlayingCard(i)){
+                        //printf("client %d is playing card.. message ignored..\n",i);
+                        continue; //ignore client playing card
+                    }
+                    
+                    
                     clientCode=i;
                     
                     //menu request detector client by client
@@ -373,31 +466,6 @@ int main(int argc, char** argv) {
 
 
 
-                    //client_exit
-                    if (bytes_received < 1) { 
-                        printf("exit detected.. \n");
-                        FD_CLR(i, &master);
-                        /*
-                        if (turn==i){
-                            turn=changeTurn(players,turn);
-                        }
-                        playerDelete(players, i);
-                        */
-                        int deletedWaitingQueue=0; 
-                        deleteUserinfo(i);
-                        deletedWaitingQueue=deleteWaitingQueue(i);
-                        if(deletedWaitingQueue){
-                            totalWaitingPlayer--;
-                        }
-                        connectedClient--;
-                        printf("player count : %d \n",connectedClient);
-                        if(connectedClient==0){
-                            connectionEnd=0;
-                            start=0;
-                        }
-                        CLOSESOCKET(i);                          
-                        continue;
-                    }
 
 
                     // login or account
@@ -544,6 +612,28 @@ int checkUserInfo(char *receviedData ,int dataLength){
 
 }
 */
+
+int checkClientPlayingCard(int client){
+    for (int i=0;i<userlimit;i++){
+        if(client == currentPlayers[i]){
+            return 1; //client is playing Card
+        }
+    }
+    return 0;
+}
+void storeClientInRoom(int roomNumber){
+    for(int i=0;i<userlimit;i++){
+        if(currentUsers[i].userNumber==-1) //ignore empty 
+            continue;
+        for(int j=0;j<playerlimit;j++){
+            if(currentUsers[i].userNumber==playerSets[j]){
+                currentUsers[i].playingStatus=1;
+                currentUsers[i].room=roomNumber;
+            }
+        }
+    }
+}
+
 void readExtracter(char read[],int bytes_received){
 
     char tmp[bytes_received+1];
@@ -641,6 +731,7 @@ int checkClientRequest(int clientCode){
     return 0;
 
 }/*
+
 void storeRequestingClient(int specialRequestClient[],int client){
     for(int i=0;i<userlimit;i++){
         if(specialRequestClient[i]==-1){
@@ -650,23 +741,28 @@ void storeRequestingClient(int specialRequestClient[],int client){
     }
 }
 */
-void playerStore(int *players, int newcomer){
+void initializePlayerSet(){
+    for (int i=0;i<playerlimit;i++){
+        playerSets[i]=-1;
+    }
+}
+void playerSetStore(int *players ,int newcomer){
 
     for(int i=0;i<playerlimit;i++){
-        if(players[i]==-1){
+        if(players[i]<1){
             players[i] = newcomer;
-            printf("player %d >> %d stored.. \n",i,newcomer);
+            printf("In playerSet or currentPlayers client: %d >> %d stored.. \n",i,newcomer);
             break;
         }        
     } 
     
 }
-void playerDelete(int *players, int goodbye){
+void playerSetDelete(int *players, int goodbye){
 
     for(int i=0;i<playerlimit;i++){
         if(players[i]==goodbye){
             players[i] = -1;
-            printf("player %d >> %d deleted.. \n",i,goodbye);        
+            printf("In playerSet %d >> %d deleted.. \n",i,goodbye);        
             break;
         }
     } 
@@ -738,7 +834,7 @@ void *waitingTimeOut(){
         if(totalWaitingPlayer==0){
             printf("All client out from waitingLine >> Close Room\n");
             start=0;
-            connectionEnd=0;
+            
             return NULL;
         }
 
@@ -750,15 +846,20 @@ void *waitingTimeOut(){
                 printf("not enough players matched for game sending message to client : %d\n",waitingLine[i]);
                 send(waitingLine[i], failMessage,strlen(failMessage), 0);
                 deleteWaitingQueue(waitingLine[i]);
+                
             }
         }
         
     }
     if(totalWaitingPlayer>1){
+        printf("card game start command activated.. \n");
+        gameStart=1; // command to make additional thread for game
         for(int i=0;i<userlimit;i++){
             if(waitingLine[i]!=-1){
                 printf("sending match success message to client : %d\n",waitingLine[i]);
                 send(waitingLine[i], successMessage,strlen(successMessage), 0);
+                playerSetStore(playerSets,waitingLine[i]);
+                playerSetStore(currentPlayers,waitingLine[i]);
                 deleteWaitingQueue(waitingLine[i]);
             }
         }
@@ -766,12 +867,55 @@ void *waitingTimeOut(){
 
     
     totalWaitingPlayer=0;
-    connectionEnd=0;
+    
     start=0;
 
 
 	return NULL;
 }
+
+void *createCardGameRoom(void *roomNumber){
+    int players[4];
+    int *room=(int *)roomNumber;
+    int roomNum = *room;
+    int playerCount=0;
+    int turn =-1;
+    SOCKET max_socket=-1;
+
+    for(int i=0;i<playerlimit;i++){
+        players[i] = playerSets[i];
+        if(players[i]!=-1){
+            if(turn ==-1){
+                turn = players[i];
+            }
+            if(max_socket<players[i]){
+                max_socket=players[i];
+            }
+            printf("client %d entered in room %d \n",players[i],roomNum);
+            playerCount++;
+        }
+    }
+    
+    printf("first turn is %d in room %d \n",turn,roomNum);
+
+    initializePlayerSet();
+    while(1){
+        //masterCard is global
+        if (select(max_socket+1, &masterCard, 0, 0, 0) < 0) {
+            fprintf(stderr, "In thread select() failed. (%d)\n", GETSOCKETERRNO());
+            exit(1);
+        }
+
+        for(int i=0;i<playerlimit;i++){
+            if (FD_ISSET(i, &masterCard)) {
+                // if not turn ignore 
+                // -> if item effect first and continue turn doesn't change
+            }
+        }
+    }
+}
+
+
 void signalDetection(int sig){
     if(sig ==SIGCONT){
     //printf("signal received.. termainating countdown..");
