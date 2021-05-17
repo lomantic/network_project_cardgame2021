@@ -34,6 +34,9 @@
 #include <string.h>
 #include <ctype.h>
 #include <stdbool.h>
+#include <signal.h>
+#include <pthread.h>
+
 
 #define ISVALIDSOCKET(s) ((s) >= 0)
 #define CLOSESOCKET(s) close(s)
@@ -51,6 +54,14 @@ int submenu_cardgame();
 int submenu(int purpose);
 int menu();
 
+int waitForCardGame();
+
+typedef struct{
+    int server;
+    int create_success;
+}waitForGame;
+static waitForGame *waitForServer;
+
 int main(int argc, char** argv) {
 
 
@@ -59,7 +70,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 //---login or account make----
-    
+    int gamestart=0;
+
     int purpose =0; //default 
     int showMenu=0;
     int actioncode=0;
@@ -129,6 +141,15 @@ int main(int argc, char** argv) {
 
     freeaddrinfo(peer_address);
     while(1) {
+        if(gamestart==1){
+            //game someting,,,
+            printf("THIS IS GAME PAGE \n");
+            printf("THIS IS GAME PAGE \n");
+            printf("THIS IS GAME PAGE \n");
+            gamestart=0;
+        }
+
+
         if(showMenu==1){
             actioncode= menu();
             printf("request : %d \n",actioncode);
@@ -256,6 +277,28 @@ int main(int argc, char** argv) {
                 }
             }
 
+            if ((read[0]=='<' && read[bytes_received-2]=='>')){
+                
+                printf("%.*s\n", bytes_received,read);
+                
+                int connectionReusult=0;
+                waitForServer = malloc((sizeof(*waitForServer)));
+                (*waitForServer).server = socket_peer;
+                waitForServer->create_success=0;
+
+                connectionReusult = waitForCardGame();
+
+                //system("clear");
+                // do something with result 0 or 1 
+                if(connectionReusult){
+                    gamestart=1;
+                }
+                else{
+                    showMenu=1;
+                }
+
+                continue;
+            }
             printf("Received (%d bytes): %.*s \n",bytes_received, bytes_received, read);
             
         }
@@ -313,6 +356,56 @@ int askingPurpose(){
     }
     }
 }
+
+int waitForCardGame(){
+
+    int bytes_received;
+
+
+    char waitForRoom[]="waitingForRoom";
+    send(waitForServer->server, waitForRoom, strlen(waitForRoom), 0);
+    while(1){
+        fd_set reads_thread;
+        FD_ZERO(&reads_thread);
+        FD_SET(waitForServer->server, &reads_thread);
+
+        int waiting=0;
+        char read[100];
+
+        struct timeval timeout;
+        timeout.tv_sec = 0;
+        timeout.tv_usec = 100000;
+        if (select((waitForServer->server)+1, &reads_thread, 0, 0, &timeout) < 0) {
+            fprintf(stderr, "select() failed. (%d)\n", GETSOCKETERRNO());
+            return 1;
+        }
+
+    
+        if(FD_ISSET(waitForServer->server, &reads_thread)){
+            bytes_received = recv(waitForServer->server, read, 100, 0);
+            if(read[0]=='<' && read[bytes_received-2]=='>'){
+                if(read[1]=='#' && read[bytes_received-3]=='#'){
+                    printf("%.*s \n",bytes_received, read);
+                    sleep(1);
+                    return 0; // go back to main menu
+                }
+                else{
+                    printf("%.*s \n",bytes_received, read);
+                    sleep(1);
+                    return 1;
+                    //go to game function 
+                }
+            }
+        }
+        else{
+            continue;
+            system("clear");
+        }
+        
+    }
+    
+}   
+
 void askUsername(char username[]){
     char userinput[20];
     

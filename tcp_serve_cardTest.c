@@ -52,10 +52,12 @@
 #define GETSOCKETERRNO() (errno)
 #define SEM_NAME "/Time"
 
-void *waitingTimeOut(void* socket);
+void *waitingTimeOut();
 void signalDetection(int sig);
 static int start=0;
 static int connectionEnd=0;
+static int totalWaitingPlayer=0;
+
 
 //static sem_t * sem;
 
@@ -78,16 +80,23 @@ int clientIdxFinder(int clientCode);
 void requestSolver(int clientCode,char message[]);
 void readExtracter(char read[],int bytes_received);
 int checkClientRequest(int clientCode);
-void storeRequestingClient(int specialRequestClient[],int client);
+//void storeRequestingClient(int specialRequestClient[],int client);
 void storeUserinfo(char username[]);
 void deleteUserinfo(int userNumber);
 void storeUserPurpose(int userNumber,int purpose);
 
+void storeWaitingQueue(int client);
+int deleteWaitingQueue(int client);
 
-static int totalPlayer=0;
+static int connectedClient=0;
+
 const static int playerlimit=4;
 const static int userlimit=10;
+
+static char waitingLine[10]; //sameas userlimit changed cuz of compile error
+
 static int clientCode=0;
+fd_set master;
 
 typedef struct{
     int userNumber;
@@ -95,9 +104,18 @@ typedef struct{
     int currnetRequest;
     char *title;
 }userData;
-
 static userData *currentUsers; 
-fd_set master;
+
+typedef struct{
+    char cardType; // R (red) G (green) B (blue) Y (yellow)
+    char cardStyle;// 1~9 p (plus) j (jump) d (direction) a (attk2) s (attk3) q (ultimate attk)
+    int attack;// .0 .2 .3
+    int ultimate; //.0 .1
+}card;
+static card *totalCard;
+const static int totalCardType=4;
+const static int totalCardStyle=15;
+
 
 
 int main(int argc, char** argv) {
@@ -113,10 +131,13 @@ int main(int argc, char** argv) {
     for(int i=0;i<userlimit;i++){
         currentUsers[i].userNumber=-1; // default -1 means no client
         currentUsers[i].currnetRequest=-1;
+        waitingLine[i]=-1;
         //printf("[%d] num is : %d\n",i,currentUsers[i].userNumber); test code
     }
 
-    int specialRequestClient[userlimit];
+
+
+    //int specialRequestClient[userlimit];
     int players[4]={-1,-1,-1,-1};
     int turn=-1;
     int purpose=-1;
@@ -124,8 +145,30 @@ int main(int argc, char** argv) {
     char notYourTurn[]="it's not your turn please wait for your turn... \n";
     char askPurpose[]="?purpose?\n";
     
+    totalCard = malloc((sizeof(*totalCard))*(totalCardStyle*totalCardType)); // 4*15 =60
+    char totalCardTypeList[]={'R','G','B','Y'};
+    char totalCardStyleList[]={'1','2','3','4','5','6','7','8','9','p','j','d','a','s','q'};
+    int cardNumber=0;
+    for(int i=0;i<totalCardType;i++){
+        for(int j=0;j<totalCardStyle;j++){
+            totalCard[cardNumber].cardType=totalCardTypeList[i];
+            totalCard[cardNumber].cardStyle=totalCardStyleList[j];
+            
+            if(totalCardStyleList[j]=='a')
+                totalCard[cardNumber].attack=2;
+            else if(totalCardStyleList[j]=='s')
+                totalCard[cardNumber].attack=3;
+            else
+                totalCard[cardNumber].attack=0;
+            
+            if(totalCardStyleList[j]=='q')
+                totalCard[cardNumber].ultimate=1;
+            else
+                totalCard[cardNumber].ultimate=0;
+        }
+    }
 
-    pthread_t thread_id;
+    
     //sem = sem_open(SEM_NAME, O_RDWR | O_CREAT, 0777, 1);
     /*
     if(sem == SEM_FAILED)
@@ -182,17 +225,6 @@ int main(int argc, char** argv) {
     while(1) {
         fd_set reads;
         reads = master;
-        /*
-        if(connectionEnd==1){
-            int lonePlayer=unconnectMessage(players);
-            FD_CLR(lonePlayer, &master);
-            CLOSESOCKET(lonePlayer);        
-            totalPlayer=0;
-            connectionEnd=0;
-            start=0;
-            continue;
-        }
-        */
 
         if (select(max_socket+1, &reads, 0, 0, 0) < 0) {
             fprintf(stderr, "select() failed. (%d)\n", GETSOCKETERRNO());
@@ -222,30 +254,30 @@ int main(int argc, char** argv) {
                             address_buffer, sizeof(address_buffer), 0, 0,
                             NI_NUMERICHOST);
                     printf("New connection request from %s\n", address_buffer);
-
-                    if(totalPlayer==playerlimit){
-                        char notEnoughSpace[]="#Message from server : Room full connection refused#\n";
+                    
+                    if(connectedClient==playerlimit){
+                        char notEnoughSpace[]="#Message from server : Server full connection refused#\n";
                         send(socket_client,notEnoughSpace,strlen(notEnoughSpace),0);
                         CLOSESOCKET(socket_client);
                         printf("connection refused.. \n");
                         continue;    
                     } 
-
+                    
                     FD_SET(socket_client, &master);
                     if (socket_client > max_socket)
                         max_socket = socket_client;
                     printf("connected.. \n");
                     /*
                     playerStore(players,socket_client);
-                    if(totalPlayer==0)
+                    if(totalWaitingPlayer==0)
                         turn=players[0];
                         */
-                    totalPlayer++;
-                    printf("player count : %d \n",totalPlayer);
+                    connectedClient++;
+                    printf("current number of connected client : %d \n",connectedClient);
                     //ask purpose of connection
                     send(socket_client, askPurpose,strlen(askPurpose), 0);
-
-                    if(totalPlayer==1){
+/*
+                    if(totalWaitingPlayer==1){
                         printf("count start \n");
                         int status;
                     	status=pthread_create(&thread_id, NULL, waitingTimeOut, (void *)socket_client);
@@ -256,14 +288,14 @@ int main(int argc, char** argv) {
                         pthread_detach(thread_id);
 
                     }
-                    else if(totalPlayer>1){
+                    else if(totalWaitingPlayer>1){
                         printf("sending  signal to pthread.. \n");
-                        signal(SIGTERM,signalDetection);
-                        pthread_kill(thread_id,SIGTERM);
+                        signal(SIGCONT,signalDetection);
+                        pthread_kill(thread_id,SIGCONT);
                         printf("count down terminated\n");
                     }
                     
-
+*/
 
                 } 
                 else {
@@ -296,10 +328,25 @@ int main(int argc, char** argv) {
                         purpose= atoi(request);
                         printf("client %d : request from menu <%d> received..\n",i,purpose);
                     }
+
+                    if(purpose>100){
+                        //storeRequestingClient(specialRequestClient,i);
+                        if(purpose==101){
+                            char pwRequest[]= "<searching for other players>\n";
+                            storeUserPurpose(clientCode,purpose);
+                            send(i,pwRequest, strlen(pwRequest), 0);
+                            
+                            storeWaitingQueue(clientCode);
+                            purpose=-1; //situation disabled
+                            continue;
+                        }
+
+                    }
+
                     
                     //sub menu request my info
                     if(purpose >200 ){
-                        storeRequestingClient(specialRequestClient,i);
+                        //storeRequestingClient(specialRequestClient,i);
                         //new password request
                         if(purpose==201){
                             char pwRequest[]= "=*New password request*=\n";
@@ -334,13 +381,17 @@ int main(int argc, char** argv) {
                         if (turn==i){
                             turn=changeTurn(players,turn);
                         }
-                        
                         playerDelete(players, i);
                         */
+                        int deletedWaitingQueue=0; 
                         deleteUserinfo(i);
-                        totalPlayer--;
-                        printf("player count : %d \n",totalPlayer);
-                        if(totalPlayer==0){
+                        deletedWaitingQueue=deleteWaitingQueue(i);
+                        if(deletedWaitingQueue){
+                            totalWaitingPlayer--;
+                        }
+                        connectedClient--;
+                        printf("player count : %d \n",connectedClient);
+                        if(connectedClient==0){
                             connectionEnd=0;
                             start=0;
                         }
@@ -416,7 +467,7 @@ int main(int argc, char** argv) {
                     // nomral
                     if(purpose== -1){
                         
-                        if(totalPlayer<2){
+                        if(totalWaitingPlayer<2){
                             send(i,notEnoughPlayer,strlen(notEnoughPlayer),0);
                             continue;
                         }
@@ -514,7 +565,38 @@ void requestSolver(int clientCode, char message[]){
 
     int clientIdx = clientIdxFinder(clientCode);
     int request = currentUsers[clientIdx].currnetRequest;
+    
     //currentUsers[clientCode].currnetRequest=-1;// request solved
+    if(request>100){
+        if(request==101){
+            totalWaitingPlayer++;
+            pthread_t thread_id;
+            if(totalWaitingPlayer==1){
+                printf("game request form client : %d \n",clientCode);
+                int status;
+                printf("thread created countdown start\n");
+                
+            	status=pthread_create(&thread_id, NULL, waitingTimeOut,NULL);
+                if(status==-1){
+            		fprintf(stderr,"PThread  Creation Error \n");
+            		exit(0);
+            	}
+                
+                pthread_detach(thread_id);
+            }
+            else if(totalWaitingPlayer>1){
+                printf("addtional game request from client %d \n",clientCode);
+                printf("sending  signal to pthread.. \n");
+                signal(SIGCONT,signalDetection);
+                //pthread_kill(thread_id,SIGCONT);
+                printf("\n");
+            }
+            currentUsers[clientIdx].currnetRequest=-1;// request solved
+            return;
+        }
+    }
+    
+    
     if(request>200){
         //change password
         if(request==201){
@@ -558,7 +640,7 @@ int checkClientRequest(int clientCode){
     }
     return 0;
 
-}
+}/*
 void storeRequestingClient(int specialRequestClient[],int client){
     for(int i=0;i<userlimit;i++){
         if(specialRequestClient[i]==-1){
@@ -567,6 +649,7 @@ void storeRequestingClient(int specialRequestClient[],int client){
         }
     }
 }
+*/
 void playerStore(int *players, int newcomer){
 
     for(int i=0;i<playerlimit;i++){
@@ -576,7 +659,7 @@ void playerStore(int *players, int newcomer){
             break;
         }        
     } 
-
+    
 }
 void playerDelete(int *players, int goodbye){
 
@@ -587,7 +670,7 @@ void playerDelete(int *players, int goodbye){
             break;
         }
     } 
-
+    
 }
 int changeTurn(int *players,int currentTurn){
     printf("Prev turn : %d \n",currentTurn);
@@ -609,26 +692,80 @@ int changeTurn(int *players,int currentTurn){
         
     }
 }
-void *waitingTimeOut(void * socket)
-{
-
-    int client = (int)socket;
-    char message[]="##Message from server : wating time out##\n";
-	for(int i=0; i < 10; i++)
-	{
-        printf("%d seconds before end connection.. \n",10-i);
-        sleep(1);
-        if(start==1){
-            return NULL; 
+int deleteWaitingQueue(int client){
+    for(int i=0;i<userlimit;i++){
+        if(waitingLine[i]==client){
+            printf("client : %d deleted in waiting queue No. %d\n",client,i);
+            waitingLine[i]=-1;
+            return 1; //deleted something
         }
-	}
-    connectionEnd=1;
+    }
+    return 0;
+}
 
-    printf("disconnection value : %d >>Activated..\n",connectionEnd);
-    send(client, message,strlen(message), 0);
-    FD_CLR(client, &master);
-    CLOSESOCKET(client);        
-    totalPlayer=0;
+void storeWaitingQueue(int client){
+
+    for(int i=0;i<userlimit;i++){
+        if(waitingLine[i]==-1){
+            printf("client : %d stored in waiting queue No. %d\n",client,i);
+            waitingLine[i]=client;
+            return;
+        }
+    }
+}
+
+void *waitingTimeOut(){
+    int waitingTime=15;
+    int addTime=10;
+    int lonePlayer;
+    int addTimecount=0;
+    char failMessage[]="<# Message from server : match failed #>\n";
+    char successMessage[]="< match success game will start soon... >\n";
+	for(int i=0; i < waitingTime; i++){
+        if(totalWaitingPlayer==4){
+            printf("client count >> %d / Waitng Queue full\n",totalWaitingPlayer);
+            break;
+        }
+        printf("current waitng client >> %d \n",totalWaitingPlayer);
+        printf("%d seconds before closing waiting room.. \n",waitingTime-i);
+        sleep(1);
+        if((start==1) &&(totalWaitingPlayer==2)&&(addTimecount==0)){
+            addTimecount++;
+            printf("additional client entrance detected\n");
+            printf("current totalWaitingPlayer : %d >> add %d sec\n",totalWaitingPlayer,addTime);
+            waitingTime = waitingTime+addTime;
+        }
+        if(totalWaitingPlayer==0){
+            printf("All client out from waitingLine >> Close Room\n");
+            start=0;
+            connectionEnd=0;
+            return NULL;
+        }
+
+	}
+    
+    if(totalWaitingPlayer==1){
+        for(int i=0;i<userlimit;i++){
+            if(waitingLine[i]!=-1){
+                printf("not enough players matched for game sending message to client : %d\n",waitingLine[i]);
+                send(waitingLine[i], failMessage,strlen(failMessage), 0);
+                deleteWaitingQueue(waitingLine[i]);
+            }
+        }
+        
+    }
+    if(totalWaitingPlayer>1){
+        for(int i=0;i<userlimit;i++){
+            if(waitingLine[i]!=-1){
+                printf("sending match success message to client : %d\n",waitingLine[i]);
+                send(waitingLine[i], successMessage,strlen(successMessage), 0);
+                deleteWaitingQueue(waitingLine[i]);
+            }
+        }
+    }
+
+    
+    totalWaitingPlayer=0;
     connectionEnd=0;
     start=0;
 
@@ -636,7 +773,7 @@ void *waitingTimeOut(void * socket)
 	return NULL;
 }
 void signalDetection(int sig){
-    if(sig ==SIGTERM){
+    if(sig ==SIGCONT){
     //printf("signal received.. termainating countdown..");
     start=1;
     }   

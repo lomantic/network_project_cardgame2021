@@ -6,3 +6,15 @@ tcp_client_createForPython.c
 *.exe
 USER_DATA/asdfghj/login
 USER_DATA/qwertyu/login
+linkClient.py
+*.py
+USER_DATA/kindperson/login
+USER_DATA/malidlw/login
+USER_DATA/Miranda/login
+USER_DATA/mynameis/login
+testFolder/itoaTest.c
+testFolder/fgetTest.c
+tcp_client_createForPython.c
+linkClientTestCreate.py
+linkClient.py
+linkClientTestCreate.py
