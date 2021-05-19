@@ -141,14 +141,6 @@ int main(int argc, char** argv) {
 
     freeaddrinfo(peer_address);
     while(1) {
-        if(gamestart==1){
-            //game someting,,,
-            printf("THIS IS GAME PAGE \n");
-            printf("THIS IS GAME PAGE \n");
-            printf("THIS IS GAME PAGE \n");
-            gamestart=0;
-        }
-
 
         if(showMenu==1){
             actioncode= menu();
@@ -182,6 +174,12 @@ int main(int argc, char** argv) {
             char read[4096];
             int bytes_received = recv(socket_peer, read, 4096, 0);
             
+            // activate only when game is running
+            if(gamestart==1){
+                
+                printf("%.*s \n",bytes_received, bytes_received, read);
+                continue;
+            }
             //kill connnection or message from server
             if (bytes_received < 1 || (read[0]=='#' && read[bytes_received-2]=='#')) {
                 if(read[1]=='!' && read[bytes_received-3]=='!'){
@@ -299,20 +297,25 @@ int main(int argc, char** argv) {
 
                 continue;
             }
-            printf("Received (%d bytes): %.*s \n",bytes_received, bytes_received, read);
+            
+            
             
         }
 
         //stdin
         if(FD_ISSET(0, &reads)) {
-            char read[4096];
-            if (!fgets(read, 4096, stdin)){ 
-                printf("FATAL ERROR >> unproper input\n");
-                break;
+            if(gamestart==1){
+                char read[4096];
+                if (!fgets(read, 4096, stdin)){ 
+                    printf("FATAL ERROR >> unproper input\n");
+                    break;
+                }
+
+                //printf("Sending: %s", read);
+                send(socket_peer, read, strlen(read), 0);
             }
-            printf("Sending: %s", read);
-            int bytes_sent = send(socket_peer, read, strlen(read), 0);
-            printf("Sent %d bytes.\n", bytes_sent);
+            //int bytes_sent = send(socket_peer, read, strlen(read), 0);
+            //printf("Sent %d bytes.\n", bytes_sent);
         }
     } //end while(1)
 
@@ -391,6 +394,7 @@ int waitForCardGame(){
                 }
                 else{
                     printf("%.*s \n",bytes_received, read);
+                    send(waitForServer->server, waitForRoom, strlen(waitForRoom), 0);
                     sleep(1);
                     return 1;
                     //go to game function 

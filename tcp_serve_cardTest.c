@@ -37,6 +37,7 @@
 #include <string.h>
 #include <ctype.h>
 
+#include <time.h>
 #include <signal.h>
 #include <pthread.h>
 #include <semaphore.h>
@@ -80,6 +81,7 @@ void playerSetStore(int players[],int newcomer);
 void playerSetDelete(int players[], int goodbye);
 int changeTurn(int players[],int currentTurn);
 
+
 int checkClientPlayingCard(int client);
 int clientIdxFinder(int clientCode);
 void requestSolver(int clientCode,char message[]);
@@ -96,7 +98,7 @@ int deleteWaitingQueue(int client);
 
 
 static int connectedClient=0;
-
+const int MAX_CARD=15;
 const static int playerlimit=4;
 const static int userlimit=10;
 
@@ -118,6 +120,12 @@ typedef struct{
 }userData;
 static userData *currentUsers; 
 
+typedef struct{
+    int userNumber;
+    char *username;
+    int cardCount;
+}userInfo;
+
 /*
 typedef struct{
     int playerList[4]; // receive playerSets[4]
@@ -132,7 +140,14 @@ typedef struct{
     char cardStyle;// 1~9 p (plus) j (jump) d (direction) a (attk2) s (attk3) q (ultimate attk)
     int attack;// .0 .2 .3
     int ultimate; //.0 .1
+    int used; // .-1 .0 .1 // -1 means "this space does not have card"
 }card;
+
+int cardDeckCounter(card *cardDeck);
+void sendCardToClient(int cardCount, card *playerDeck, card *cardDeck);
+int checkCardCount(int cardCount, userInfo playerinfo);
+void storePlayerRoomInfo(int players[], userInfo *playerinfo);
+void shuffleCard(card* cardDeck);
 static card *totalCard;
 const static int totalCardType=4;
 const static int totalCardStyle=15;
@@ -195,6 +210,9 @@ int main(int argc, char** argv) {
                 totalCard[cardNumber].ultimate=1;
             else
                 totalCard[cardNumber].ultimate=0;
+
+            totalCard[cardNumber].used=0; // if given too user >> 1
+            cardNumber++;
         }
     }
 
@@ -768,26 +786,7 @@ void playerSetDelete(int *players, int goodbye){
     } 
     
 }
-int changeTurn(int *players,int currentTurn){
-    printf("Prev turn : %d \n",currentTurn);
-    for(int i=0;i<playerlimit;i++){
-        if (players[i]==currentTurn)
-        {   
-            while(1){
-                i++;
-                if(i==playerlimit)
-                    i=0;
-                if(players[i]==-1)
-                    continue;
-                else{
-                    printf("Turn changed >> %d \n",players[i]);
-                    return players[i];
-                }
-            }
-        }
-        
-    }
-}
+
 int deleteWaitingQueue(int client){
     for(int i=0;i<userlimit;i++){
         if(waitingLine[i]==client){
@@ -880,13 +879,42 @@ void *createCardGameRoom(void *roomNumber){
     int roomNum = *room;
     int playerCount=0;
     int turn =-1;
+    int initialCard=6;
+    
     SOCKET max_socket=-1;
+    
+    card currentDeck;
+    card clientInput;
+
+    card *cardDeck = malloc((sizeof(card))*(totalCardStyle*totalCardType));
+    memcpy(cardDeck,totalCard,(sizeof(*totalCard))*(totalCardStyle*totalCardType));
+    
+    card *usedCardDeck= malloc((sizeof(card))*(totalCardStyle*totalCardType));
+    
+    shuffleCard(cardDeck);
+
+    printf("1st deck created [%c%c] in room No. %d \n",cardDeck[0].cardType,cardDeck[0].cardStyle,roomNum);
+    currentDeck = cardDeck[0];
+    cardDeck[0].used =1;
+
+    //shuffle card
+    /* test code print shuffled card
+    for (int i = 0; i < 60; i++)
+    {
+        printf("%c%c ",cardDeck[i].cardType,cardDeck[i].cardStyle);
+    }
+    */
+
+
+    FD_ZERO(&masterCard);
 
     for(int i=0;i<playerlimit;i++){
         players[i] = playerSets[i];
         if(players[i]!=-1){
+            FD_SET(players[i],&masterCard);
             if(turn ==-1){
                 turn = players[i];
+                printf("first turn is %d in room %d \n",turn,roomNum);
             }
             if(max_socket<players[i]){
                 max_socket=players[i];
@@ -895,10 +923,28 @@ void *createCardGameRoom(void *roomNumber){
             playerCount++;
         }
     }
-    
-    printf("first turn is %d in room %d \n",turn,roomNum);
 
-    initializePlayerSet();
+    userInfo *playerInfo = malloc((sizeof(userInfo))*(playerCount));
+    storePlayerRoomInfo(players,playerInfo); // client default set 
+
+    card **playerDeck = (card **)malloc((sizeof(card*))*(playerCount));
+    for(int i=0;i<playerCount;i++){
+        playerDeck[i] = (card *)malloc((sizeof(card))*(MAX_CARD));
+        for(int j = 0; j < MAX_CARD; j++){
+            playerDeck[i][j].used = -1; // default no cards 
+        }
+        // 1st time always possible
+        //if(checkCardCount(initialCard,playerInfo[i])){
+            sendCardToClient(initialCard, playerDeck[i],cardDeck);
+        //}
+        //else{
+        //    printf("client : %d >> name :%s card overloaded \n",playerInfo[i].userNumber,playerInfo[i].username);
+        //}
+    }
+    
+    initializePlayerSet(); //playerSet is global needed to make other rooms
+    printf("playerSet initialized.. ready to make new room \n");
+
     while(1){
         //masterCard is global
         if (select(max_socket+1, &masterCard, 0, 0, 0) < 0) {
@@ -906,15 +952,204 @@ void *createCardGameRoom(void *roomNumber){
             exit(1);
         }
 
-        for(int i=0;i<playerlimit;i++){
+        for(int i=1;i<=max_socket;i++){
             if (FD_ISSET(i, &masterCard)) {
                 // if not turn ignore 
                 // -> if item effect first and continue turn doesn't change
+
+                char read[15];
+                int bytes_received = recv(i, read, 15, 0);
+
+                if(turn!=i){ //ignore client if not turn
+                    //printf("current turn client>> %d \n",turn);
+                    continue;
+                }
+                char gameScreen[1024];
+                // count cardDeck left
+                int nullCount=0;
+                int cardDeckLeft=0;
+                char cardLeft[3];
+                nullCount = cardDeckCounter(cardDeck)+1;
+                cardDeckLeft = totalCardStyle*totalCardType -nullCount;
+                sprintf(cardLeft,"%d",cardDeckLeft);
+            
+                strcpy(gameScreen,"<Stranger Cards>\n\n");
+                strcat(gameScreen,"Cards left in deck : ");
+                strcat(gameScreen,cardLeft);
+                strcat(gameScreen,"\n\n");
+
+
+
+
+
+
+                SOCKET j; // send message to others
+                for (j = 1; j <= max_socket; j++) {
+                    if (FD_ISSET(j, &masterCard)) {
+                        send(j, read, bytes_received, 0);                              
+                    }
+                    }
+            }//if FD_ISSET
+
+                continue;
+        }//for loop
+    }//while
+}// func create thread
+
+void takeCardFromClient(int cardPosition, card *playerDeck ){
+    printf("receving %c%c from player \n",playerDeck[cardPosition].cardType,playerDeck[cardPosition].cardStyle);
+    playerDeck[cardPosition].cardType='x';
+    playerDeck[cardPosition].cardStyle='x';
+    playerDeck[cardPosition].used= -1; //does not exist
+}
+
+int changeTurn(int *players,int currentTurn){
+    printf("Prev turn : %d \n",currentTurn);
+    for(int i=0;i<playerlimit;i++){
+        if (players[i]==currentTurn)
+        {   
+            while(1){
+                i++;
+                if(i==playerlimit)
+                    i=0;
+                if(players[i]==-1)
+                    continue;
+                else{
+                    printf("Turn changed >> %d \n",players[i]);
+                    return players[i];
+                }
+            }
+        }
+        
+    }
+}
+
+int checkClientCardExist(card inputCard, card *playerDeck ){
+
+    for (int i=0;i<MAX_CARD;i++){
+        if(playerDeck[i].used == 0){ // this space has card
+            if((inputCard.cardType==playerDeck[i].cardType)&&(inputCard.cardStyle==playerDeck[i].cardStyle))
+                return i; //exist return position of selected card
+            else
+                continue;
+        }
+    }
+    return 0; //card not found
+}
+
+
+int checkClientCardValid(card inputCard, card currentDeck){
+
+    if((inputCard.cardType==currentDeck.cardType)||(inputCard.cardStyle==currentDeck.cardStyle))
+        return 1; //possible
+    else
+        return 0; // condition of attk cards needed to be added
+    
+
+    
+} 
+int cardDeckCounter(card *cardDeck){
+    int nullCount=0;
+    while(1){
+        if(cardDeck[nullCount].used == 1){
+            nullCount++;
+        }
+        else
+            break;
+
+    }
+    return nullCount;
+}
+
+void sendCardToClient(int cardCount, card *playerDeck, card *cardDeck){
+    
+    int nullCount=0;
+
+    nullCount = cardDeckCounter(cardDeck);
+
+    int checkpoint=0;
+    for(int i=0;i<cardCount;i++){
+        for(int j=checkpoint;j<MAX_CARD;j++){
+            if(playerDeck[j].used== -1){
+                playerDeck[j]=cardDeck[nullCount];
+                cardDeck[nullCount].used =1;//gave card to client >>used
+                nullCount++;
+                if(nullCount==totalCardStyle*totalCardType){
+                    printf("cardDeck empty reshuffle active\n");
+                    shuffleCard(cardDeck);
+                    checkpoint=0;
+                }
+                else{
+                checkpoint=j+1;// not to check from the start
+                }
+                break;
             }
         }
     }
 }
 
+int checkCardCount(int cardCount, userInfo playerinfo){
+    if((playerinfo.cardCount)+cardCount>MAX_CARD)
+        return 0;//DEAD
+    else{
+        playerinfo.cardCount=(playerinfo.cardCount)+cardCount;
+        return 1; // possible
+    }
+    
+}
+
+void storePlayerRoomInfo(int players[], userInfo *playerinfo){
+    int playerCount =0;
+    for(int i=0;i<4;i++){
+        if(players[i]!= -1)
+            playerCount++;
+    }
+
+    for(int i=0;i<playerCount;i++){
+        for(int j=0;j<userlimit;j++){
+            if(currentUsers[j].userNumber==players[i]){
+                playerinfo[i].userNumber=currentUsers[j].userNumber;
+                playerinfo[i].username=malloc(sizeof(char)*(strlen(currentUsers[j].username)+1));
+                strcpy(playerinfo[i].username,currentUsers[j].username);
+                playerinfo[i].cardCount=0;  //default 0 cards
+                break;
+            }
+        }
+    }
+    return;
+}
+
+void shuffleCard(card* cardDeck){
+    srand(time(NULL));
+
+    card tmp;
+    int shuffleCount = 100;
+    int pickNum;
+    int pickNum2;
+    if(cardDeck[0].used !=0){ //shuffle function activate onlt when used is 100% 0 or 1 
+        for(int i=0;i<(totalCardStyle*totalCardType);i++){
+            cardDeck[i].used = 0;
+        }
+    }
+
+    for(int i=0;i<shuffleCount;i++){
+        pickNum=random()%(totalCardStyle*totalCardType);
+        //printf("pickNum : %d \n",pickNum);
+        while(1){
+            pickNum2=random()%(totalCardStyle*totalCardType);
+            if(pickNum2==pickNum)
+                continue;
+            else
+                break;
+        }
+        //printf("pickNum2 : %d \n",pickNum2);
+        tmp = cardDeck[pickNum];
+        cardDeck[pickNum]=cardDeck[pickNum2];
+        cardDeck[pickNum2]=tmp;
+
+    }
+    printf("card shuffle complete >> cardDeck ready\n");
+}
 
 void signalDetection(int sig){
     if(sig ==SIGCONT){
