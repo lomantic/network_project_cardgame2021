@@ -176,8 +176,9 @@ int main(int argc, char** argv) {
             
             // activate only when game is running
             if(gamestart==1){
-                
-                printf("%.*s \n",bytes_received, bytes_received, read);
+                sleep(0.1);
+                system("clear");
+                printf("%.*s \n",bytes_received, read);
                 continue;
             }
             //kill connnection or message from server

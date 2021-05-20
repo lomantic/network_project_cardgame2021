@@ -120,12 +120,6 @@ typedef struct{
 }userData;
 static userData *currentUsers; 
 
-typedef struct{
-    int userNumber;
-    char *username;
-    int cardCount;
-}userInfo;
-
 /*
 typedef struct{
     int playerList[4]; // receive playerSets[4]
@@ -143,8 +137,24 @@ typedef struct{
     int used; // .-1 .0 .1 // -1 means "this space does not have card"
 }card;
 
+
+typedef struct{
+    int userNumber;
+    char *username;
+    int cardCount;
+    card *cardDeck;
+}userInfo;
+
+
+void playerScreenMaker(char **playerScreen,userInfo *player,int playerCount,char commonScreen[]);
+void currnetCardInDeck(char outputScreen[],card currentDeckCard);
+void blindCard(char outputScreen[],userInfo playerInfo);
+void printCard(char outputScreen[],userInfo playerInfo);
+void cardToScreen(char outputScreen[],card currentCard);
+void cardsLeftInDeck(char commonScreen[],char cardLeft[]);
 int cardDeckCounter(card *cardDeck);
-void sendCardToClient(int cardCount, card *playerDeck, card *cardDeck);
+
+void sendCardToClient(int cardCount,userInfo *playerInfo, card *cardDeck);
 int checkCardCount(int cardCount, userInfo playerinfo);
 void storePlayerRoomInfo(int players[], userInfo *playerinfo);
 void shuffleCard(card* cardDeck);
@@ -810,8 +820,8 @@ void storeWaitingQueue(int client){
 }
 
 void *waitingTimeOut(){
-    int waitingTime=15;
-    int addTime=10;
+    int waitingTime=10;
+    int addTime=5;
     int lonePlayer;
     int addTimecount=0;
     char failMessage[]="<# Message from server : match failed #>\n";
@@ -930,12 +940,13 @@ void *createCardGameRoom(void *roomNumber){
     card **playerDeck = (card **)malloc((sizeof(card*))*(playerCount));
     for(int i=0;i<playerCount;i++){
         playerDeck[i] = (card *)malloc((sizeof(card))*(MAX_CARD));
+        playerInfo[i].cardDeck = playerDeck[i];//card deck address connected
         for(int j = 0; j < MAX_CARD; j++){
             playerDeck[i][j].used = -1; // default no cards 
         }
         // 1st time always possible
         //if(checkCardCount(initialCard,playerInfo[i])){
-            sendCardToClient(initialCard, playerDeck[i],cardDeck);
+        sendCardToClient(initialCard,&playerInfo[i],cardDeck);
         //}
         //else{
         //    printf("client : %d >> name :%s card overloaded \n",playerInfo[i].userNumber,playerInfo[i].username);
@@ -944,6 +955,21 @@ void *createCardGameRoom(void *roomNumber){
     
     initializePlayerSet(); //playerSet is global needed to make other rooms
     printf("playerSet initialized.. ready to make new room \n");
+
+    char client[200];
+    strcpy(client,">>\n");
+    for(int i=0;i<playerCount;i++){
+
+        printf("print user info >> %d\n",i);
+        printf("usernumber : %d \n",playerInfo[i].userNumber);
+        printf("username : %s \n",playerInfo[i].username);
+        printf("user card count : %d \n",playerInfo[i].cardCount);
+        printCard(client,playerInfo[i]);
+        printf("card %s\n",client);
+    
+    }
+
+
 
     while(1){
         //masterCard is global
@@ -959,42 +985,115 @@ void *createCardGameRoom(void *roomNumber){
 
                 char read[15];
                 int bytes_received = recv(i, read, 15, 0);
-
+                /*
                 if(turn!=i){ //ignore client if not turn
                     //printf("current turn client>> %d \n",turn);
                     continue;
                 }
-                char gameScreen[1024];
+                */
+                char commonScreen[100];
+                char currentDeckCard[20];
+                char **playerScreen=(char**)malloc((sizeof(char*))*playerCount);
+                for(int m=0;m<playerCount;m++){
+                    playerScreen[m]=(char*)malloc(sizeof(char)*1024);
+                }
+                
                 // count cardDeck left
                 int nullCount=0;
                 int cardDeckLeft=0;
                 char cardLeft[3];
-                nullCount = cardDeckCounter(cardDeck)+1;
+                nullCount = cardDeckCounter(cardDeck);
                 cardDeckLeft = totalCardStyle*totalCardType -nullCount;
                 sprintf(cardLeft,"%d",cardDeckLeft);
-            
-                strcpy(gameScreen,"<Stranger Cards>\n\n");
-                strcat(gameScreen,"Cards left in deck : ");
-                strcat(gameScreen,cardLeft);
-                strcat(gameScreen,"\n\n");
 
-
-
-
-
+                cardsLeftInDeck(commonScreen,cardLeft);
+                currnetCardInDeck(commonScreen,currentDeck);
+                playerScreenMaker(playerScreen,playerInfo,playerCount,commonScreen);
 
                 SOCKET j; // send message to others
-                for (j = 1; j <= max_socket; j++) {
-                    if (FD_ISSET(j, &masterCard)) {
-                        send(j, read, bytes_received, 0);                              
-                    }
-                    }
+                
+                for (int j = 0; j <playerCount; j++) {
+                    
+                    send(players[j],playerScreen[j], strlen(playerScreen[j]), 0);
+                    
+                    
+                }
+                free(playerScreen);                
+                
             }//if FD_ISSET
 
                 continue;
         }//for loop
     }//while
 }// func create thread
+
+void playerScreenMaker(char **playerScreen,userInfo *player,int playerCount,char commonScreen[]){
+
+    for(int i=0; i<playerCount;i++){
+        strcpy(playerScreen[i],commonScreen);
+        printCard(playerScreen[i],player[i]);
+        for(int j=0;j<playerCount;j++){
+            if(i!=j){
+                
+                blindCard(playerScreen[i],player[j]);
+            }
+        }
+
+    }
+}
+
+void cardsLeftInDeck(char commonScreen[],char cardLeft[]){
+                strcpy(commonScreen,"<Stranger Cards>\n\n");
+                strcat(commonScreen,"Cards left in deck : ");
+                strcat(commonScreen,cardLeft);
+                strcat(commonScreen,"\n\n");    
+}
+void currnetCardInDeck(char outputScreen[],card currentDeckCard){
+
+    strcat(outputScreen,"current deck card is :");
+    cardToScreen(outputScreen,currentDeckCard);
+    strcat(outputScreen,"\n");
+}
+
+void cardToScreen(char outputScreen[],card currentCard){
+
+    char type[2]="\0";
+    char style[2]="\0";
+    type[0]=currentCard.cardType;
+    style[0]=currentCard.cardStyle;
+
+    strcat(outputScreen," [ ");
+    strcat(outputScreen,type);
+    strcat(outputScreen,style);
+    strcat(outputScreen," ] "); //_[ ?? ]_
+}
+void printCard(char outputScreen[],userInfo playerInfo){
+    
+    strcat(outputScreen,"=================\n");
+    strcat(outputScreen,playerInfo.username);
+    strcat(outputScreen," : ");    
+
+    for(int i=0;i<MAX_CARD;i++){
+        //if card exists print
+        if(playerInfo.cardDeck[i].used !=(-1)){
+            cardToScreen(outputScreen,playerInfo.cardDeck[i]);
+        }
+    }
+    strcat(outputScreen,"\n");
+
+}
+void blindCard(char outputScreen[],userInfo playerInfo){
+
+    strcat(outputScreen,"=================\n");
+    strcat(outputScreen,playerInfo.username);
+    strcat(outputScreen," : ");
+
+    for(int i=0;i<playerInfo.cardCount;i++){
+        strcat(outputScreen," [ ?? ] ");
+    }
+    strcat(outputScreen,"\n");
+
+}
 
 void takeCardFromClient(int cardPosition, card *playerDeck ){
     printf("receving %c%c from player \n",playerDeck[cardPosition].cardType,playerDeck[cardPosition].cardStyle);
@@ -1061,7 +1160,7 @@ int cardDeckCounter(card *cardDeck){
     return nullCount;
 }
 
-void sendCardToClient(int cardCount, card *playerDeck, card *cardDeck){
+void sendCardToClient(int cardCount, userInfo *playerInfo, card *cardDeck){
     
     int nullCount=0;
 
@@ -1070,9 +1169,10 @@ void sendCardToClient(int cardCount, card *playerDeck, card *cardDeck){
     int checkpoint=0;
     for(int i=0;i<cardCount;i++){
         for(int j=checkpoint;j<MAX_CARD;j++){
-            if(playerDeck[j].used== -1){
-                playerDeck[j]=cardDeck[nullCount];
+            if(playerInfo->cardDeck[j].used== -1){
+                playerInfo->cardDeck[j]=cardDeck[nullCount];
                 cardDeck[nullCount].used =1;//gave card to client >>used
+                playerInfo->cardCount=(playerInfo->cardCount)+1;
                 nullCount++;
                 if(nullCount==totalCardStyle*totalCardType){
                     printf("cardDeck empty reshuffle active\n");
@@ -1100,7 +1200,8 @@ int checkCardCount(int cardCount, userInfo playerinfo){
 
 void storePlayerRoomInfo(int players[], userInfo *playerinfo){
     int playerCount =0;
-    for(int i=0;i<4;i++){
+    for(int i=0;i<playerlimit;i++){
+        
         if(players[i]!= -1)
             playerCount++;
     }
