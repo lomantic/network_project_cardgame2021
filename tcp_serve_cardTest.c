@@ -79,7 +79,7 @@ void storeClientInRoom(int roomNumber);
 void initializePlayerSet();
 void playerSetStore(int players[],int newcomer);
 void playerSetDelete(int players[], int goodbye);
-int changeTurn(int players[],int currentTurn);
+
 
 
 int checkClientPlayingCard(int client);
@@ -146,6 +146,7 @@ typedef struct{
 }userInfo;
 
 
+//void sendDeckTurn(char information[],card currentDeck , int turn);
 void playerScreenMaker(char **playerScreen,userInfo *player,int playerCount,char commonScreen[]);
 void currnetCardInDeck(char outputScreen[],card currentDeckCard);
 void blindCard(char outputScreen[],userInfo playerInfo);
@@ -154,6 +155,10 @@ void cardToScreen(char outputScreen[],card currentCard);
 void cardsLeftInDeck(char commonScreen[],char cardLeft[]);
 int cardDeckCounter(card *cardDeck);
 
+int changeTurn(userInfo *playerInfo,int currentTurn,int playerCount);
+void takeCardFromClient(int cardPosition, userInfo *playerinfo );
+int checkClientCardValid(char inputCard[], card currentDeck);
+int checkClientCardExist(char inputCard[], card *playerDeck );
 void sendCardToClient(int cardCount,userInfo *playerInfo, card *cardDeck);
 int checkCardCount(int cardCount, userInfo playerinfo);
 void storePlayerRoomInfo(int players[], userInfo *playerinfo);
@@ -284,17 +289,16 @@ int main(int argc, char** argv) {
         fd_set reads;
         reads = master;
         
+                    
         if(gameStart==1){
             gameStart=0;
             for(int i=0; i<maxRoom;i++){
                 if(cardRoom[i]==-1){
                     roomCount++;
-                    
                     //playerSet = malloc((sizeof(*playerSet)));
                     //strcpy(playerSet->playerList, playerSets);
                     //playerSet->roomNumber=roomCount;
                     int *roomNumber =&roomCount;
-
                     storeClientInRoom(*roomNumber);
                     int statusRoom;
                     printf("card room NO. %d created\n",*roomNumber);
@@ -304,7 +308,6 @@ int main(int argc, char** argv) {
                     	exit(0);
                     }
                     pthread_detach(cardRoom[i]);
-
                     //function to update user info and make thread
                     break;
                 }
@@ -340,7 +343,7 @@ int main(int argc, char** argv) {
                             NI_NUMERICHOST);
                     printf("New connection request from %s\n", address_buffer);
                     
-                    if(connectedClient==playerlimit){
+                    if(connectedClient==userlimit){
                         char notEnoughSpace[]="#Message from server : Server full connection refused#\n";
                         send(socket_client,notEnoughSpace,strlen(notEnoughSpace),0);
                         CLOSESOCKET(socket_client);
@@ -375,8 +378,8 @@ int main(int argc, char** argv) {
                     }
                     else if(totalWaitingPlayer>1){
                         printf("sending  signal to pthread.. \n");
-                        signal(SIGCONT,signalDetection);
-                        pthread_kill(thread_id,SIGCONT);
+                        signal(SIGTERM,signalDetection);
+                        pthread_kill(thread_id,SIGTERM);
                         printf("count down terminated\n");
                     }
                     
@@ -416,10 +419,15 @@ int main(int argc, char** argv) {
                         CLOSESOCKET(i);                          
                         continue;
                     }
-                    
+
+
                     if(checkClientPlayingCard(i)){
-                        //printf("client %d is playing card.. message ignored..\n",i);
+                        printf("message from client %d >> %.*s \n",i ,bytes_received, read);
+                        printf("client %d is playing card.. message ignored..\n",i);
                         continue; //ignore client playing card
+                    }
+                    else{
+                        printf("recevied <%d> >> %.*s form client %d \n",bytes_received,bytes_received, read,i);
                     }
                     
                     
@@ -453,9 +461,9 @@ int main(int argc, char** argv) {
                     if(purpose>100){
                         //storeRequestingClient(specialRequestClient,i);
                         if(purpose==101){
-                            char pwRequest[]= "<searching for other players>\n";
+                            char searchingForOther[]= "<searching for other players>\n";
                             storeUserPurpose(clientCode,purpose);
-                            send(i,pwRequest, strlen(pwRequest), 0);
+                            send(i,searchingForOther, strlen(searchingForOther), 0);
                             
                             storeWaitingQueue(clientCode);
                             purpose=-1; //situation disabled
@@ -463,7 +471,6 @@ int main(int argc, char** argv) {
                         }
 
                     }
-
                     
                     //sub menu request my info
                     if(purpose >200 ){
@@ -479,9 +486,9 @@ int main(int argc, char** argv) {
                         //account delete request
                         if(purpose==202){
                             
-                            char pwRequest[]= "=? Are you sure? y/n ?=\n";
+                            char recheck[]= "=? Are you sure? y/n ?=\n";
                             storeUserPurpose(clientCode,purpose);
-                            send(i,pwRequest, strlen(pwRequest), 0);
+                            send(i,recheck, strlen(recheck), 0);
                             purpose=-1; //situation disabled
                             continue;
                         }
@@ -490,12 +497,6 @@ int main(int argc, char** argv) {
                             //match history request
                         }
                     }
-
-
-
-
-
-
                     // login or account
                     if(purpose== 0){
                         // !@ ~~ @! command : connecting for card game
@@ -509,7 +510,7 @@ int main(int argc, char** argv) {
                             if(read[2]=='!' && read[bytes_received-4]=='!'){
                                 //client sent ID and password
                                 int resultOfReceivedData=0;
-                                start=1;//countdown end
+                                //start=1;//countdown end
                                 resultOfReceivedData=saveUserInfo(read ,bytes_received);
                                 if(resultOfReceivedData){
                                     char saveComplete[]="##Message from server : your account is created##";
@@ -523,8 +524,8 @@ int main(int argc, char** argv) {
                                 continue;
                             }
                             printf("client %d is connecting for creating account \n",i);
-                            start=1;//countdown end
-                            printf("CountDown disabled...\n");
+                            //start=1;//countdown end
+                            //printf("CountDown disabled...\n");
                             purpose=-1; //situation disabled
                             char requireData[]="?^send me ID and PW^?\n"; 
                             send(i,requireData, strlen(requireData), 0);
@@ -535,23 +536,27 @@ int main(int argc, char** argv) {
                             if(read[2]=='!' && read[bytes_received-4]=='!'){
                                 //client sent ID and password
                                 int loginResult=0;
-                                start=1;//countdown end
+                                //start=1;//countdown end
                                 
                                 loginResult=loginCheck(read ,bytes_received);
-                                if(loginResult){
+                                if(loginResult==1){
                                     char loginComplete[]="#!Message from server : login success!! welcome!!#\n";
                                     send(i,loginComplete, strlen(loginComplete), 0);
                                 }
-                                else{
+                                else if(loginResult==0){
                                     char loginError[]="##Message from server : wrong ID or PW ##";
                                     send(i,loginError, strlen(loginError), 0);
+                                }
+                                else{
+                                    char loginExist[]="##Message from server : multi login refused##";
+                                    send(i,loginExist, strlen(loginExist), 0);
                                 }
                                 purpose=-1;//situation disabled
                                 continue;
                             }
                             printf("client %d is connecting for login\n",i);
-                            start=1;//countdown end
-                            printf("CountDown disabled...\n");
+                            //start=1;//countdown end
+                            //printf("CountDown disabled...\n");
                             purpose=-1; //situation disabled
                             char requireData[]="?^send me ID and PW^?\n"; 
                             send(i,requireData, strlen(requireData), 0);
@@ -704,9 +709,11 @@ void requestSolver(int clientCode, char message[]){
             }
             else if(totalWaitingPlayer>1){
                 printf("addtional game request from client %d \n",clientCode);
-                printf("sending  signal to pthread.. \n");
-                signal(SIGCONT,signalDetection);
-                //pthread_kill(thread_id,SIGCONT);
+                char newcomer[]="$ newcomer $\n";
+                send(clientCode,newcomer, strlen(newcomer), 0);
+                //printf("sending  signal to pthread.. \n");
+                //signal(SIGTERM,signalDetection);
+                //pthread_kill(thread_id,SIGTERM);
                 printf("\n");
             }
             currentUsers[clientIdx].currnetRequest=-1;// request solved
@@ -758,7 +765,8 @@ int checkClientRequest(int clientCode){
     }
     return 0;
 
-}/*
+}
+/*
 
 void storeRequestingClient(int specialRequestClient[],int client){
     for(int i=0;i<userlimit;i++){
@@ -820,12 +828,11 @@ void storeWaitingQueue(int client){
 }
 
 void *waitingTimeOut(){
-    int waitingTime=10;
-    int addTime=5;
-    int lonePlayer;
+    int waitingTime=6;
+    int addTime=3;
     int addTimecount=0;
-    char failMessage[]="<# Message from server : match failed #>\n";
-    char successMessage[]="< match success game will start soon... >\n";
+    char failMessage[]="{# Message from server : match failed #}\n";
+    char successMessage[]="{ match success game will start soon... }\n";
 	for(int i=0; i < waitingTime; i++){
         if(totalWaitingPlayer==4){
             printf("client count >> %d / Waitng Queue full\n",totalWaitingPlayer);
@@ -834,7 +841,7 @@ void *waitingTimeOut(){
         printf("current waitng client >> %d \n",totalWaitingPlayer);
         printf("%d seconds before closing waiting room.. \n",waitingTime-i);
         sleep(1);
-        if((start==1) &&(totalWaitingPlayer==2)&&(addTimecount==0)){
+        if(/*(start==1) &&*/(totalWaitingPlayer==2)&&(addTimecount==0)){
             addTimecount++;
             printf("additional client entrance detected\n");
             printf("current totalWaitingPlayer : %d >> add %d sec\n",totalWaitingPlayer,addTime);
@@ -865,6 +872,7 @@ void *waitingTimeOut(){
         gameStart=1; // command to make additional thread for game
         for(int i=0;i<userlimit;i++){
             if(waitingLine[i]!=-1){
+                FD_CLR(waitingLine[i],&master); // stop listening card game client from main thead
                 printf("sending match success message to client : %d\n",waitingLine[i]);
                 send(waitingLine[i], successMessage,strlen(successMessage), 0);
                 playerSetStore(playerSets,waitingLine[i]);
@@ -888,6 +896,7 @@ void *createCardGameRoom(void *roomNumber){
     int *room=(int *)roomNumber;
     int roomNum = *room;
     int playerCount=0;
+    int survivers=0;
     int turn =-1;
     int initialCard=6;
     
@@ -915,7 +924,7 @@ void *createCardGameRoom(void *roomNumber){
     }
     */
 
-
+   //master card is global
     FD_ZERO(&masterCard);
 
     for(int i=0;i<playerlimit;i++){
@@ -924,7 +933,7 @@ void *createCardGameRoom(void *roomNumber){
             FD_SET(players[i],&masterCard);
             if(turn ==-1){
                 turn = players[i];
-                printf("first turn is %d in room %d \n",turn,roomNum);
+                printf("first turn is client : %d in room %d \n",turn,roomNum);
             }
             if(max_socket<players[i]){
                 max_socket=players[i];
@@ -933,6 +942,7 @@ void *createCardGameRoom(void *roomNumber){
             playerCount++;
         }
     }
+    survivers = playerCount; // survivers are remain players while playerCount only care how many players started this game
 
     userInfo *playerInfo = malloc((sizeof(userInfo))*(playerCount));
     storePlayerRoomInfo(players,playerInfo); // client default set 
@@ -955,7 +965,10 @@ void *createCardGameRoom(void *roomNumber){
     
     initializePlayerSet(); //playerSet is global needed to make other rooms
     printf("playerSet initialized.. ready to make new room \n");
+    char startMessage[]="@ game start @\n";
+    send(turn,startMessage, strlen(startMessage), 0);
 
+    /*
     char client[200];
     strcpy(client,">>\n");
     for(int i=0;i<playerCount;i++){
@@ -968,29 +981,125 @@ void *createCardGameRoom(void *roomNumber){
         printf("card %s\n",client);
     
     }
+    */
 
-
-
+    int readyActive=0;
     while(1){
+        fd_set readInThread;
+        readInThread = masterCard;
+
         //masterCard is global
-        if (select(max_socket+1, &masterCard, 0, 0, 0) < 0) {
+        if (select(max_socket+1, &readInThread, 0, 0, 0) < 0) {
             fprintf(stderr, "In thread select() failed. (%d)\n", GETSOCKETERRNO());
             exit(1);
         }
 
-        for(int i=1;i<=max_socket;i++){
-            if (FD_ISSET(i, &masterCard)) {
-                // if not turn ignore 
-                // -> if item effect first and continue turn doesn't change
 
-                char read[15];
-                int bytes_received = recv(i, read, 15, 0);
+        for(int i=1;i<=max_socket;i++){
+            if (FD_ISSET(i, &readInThread)) {
+
+                char read[1024];
+                int bytes_received = recv(i, read, 1024, 0);
+                printf("recevied <%d> : %.*s by client %d\n",bytes_received,bytes_received, read,i);
+                //printf("screenActive == %d\n",screenActive);
+
+
+                
+                // this code activates only once
+                if(read[0]=='@' && read[bytes_received-2]=='@'){
+                    readyActive=1;
+                    printf("%.*s from client %d \n",bytes_received,read,i);
+                    //do not continue needed to make game screen
+                }
                 /*
-                if(turn!=i){ //ignore client if not turn
-                    //printf("current turn client>> %d \n",turn);
+                else if((read[0]=='@' && read[bytes_received-2]=='@')&&screenActive==1){
+                    printf("%.*s from client %d \n",bytes_received,read,i);
+                    printf("already sent\n");
                     continue;
                 }
                 */
+                
+                /*
+                else if((read[0]=='?' && read[bytes_received-2]=='?')){
+                    char information[12];
+                    sendDeckTurn(information,currentDeck ,turn);
+                    printf("client %d card deck and turn request send >> [%s] \n",i,information);
+                    send(i,information, strlen(information), 0);
+                    continue;
+                }
+                */
+                if(readyActive==0){
+                    if(turn!=i){ //ignore client if not turn
+                        printf("current turn client>> %d ignore client %d \n",turn,i);
+                        continue;
+                    }
+                    //function of cards
+                    int cardPosition=-1;
+                    for (int user=0;user<playerCount;user++){
+                    if(playerInfo[user].userNumber==turn){
+                        if(bytes_received > 2){
+                            read[0]=toupper(read[0]); // type is always upper alpha
+                            read[1]=tolower(read[1]);  // style is always lower alpha or number
+                            //compare input card with currentDeck card 1: possible 0: invalid
+                            if(checkClientCardValid(read,currentDeck)){ 
+                                printf("input compare : possible >> card Exist check active \n");
+                                //card exist check
+                                cardPosition = checkClientCardExist(read, playerInfo[user].cardDeck );
+                                if(cardPosition==-1){
+                                    printf("nonexist input from client %d in room No. %d>> ignored\n",i,roomNum);
+                                    continue;
+                                }
+                                else{
+                                printf("take [%.*s] from client %d in room No. %d\n",2,read,i,roomNum);
+                                printf("change current Deck to [%.*s]\n",2,read);
+                                currentDeck = playerInfo[user].cardDeck[cardPosition];
+                                takeCardFromClient(cardPosition, &playerInfo[user]);
+                                
+                                break;
+                                }
+                            }
+                            else{
+                                printf("invalid input from client %d in room No. %d>> ignored\n",i,roomNum);
+                                continue;
+                            }
+                        }
+                        else if(bytes_received==2){ 
+                            printf("card request from client %d in room No. %d\n",i,roomNum);
+                            sendCardToClient(1,&playerInfo[user],cardDeck);// client requested a card
+                            break;
+                        }
+                        else{// input less than 2 is invalid
+                            printf("invalid input from client %d in room No. %d>> ignored\n",i,roomNum);
+                            continue;
+                        }
+                    }
+                }
+
+                        //change turn 
+                        turn = changeTurn(playerInfo,turn,playerCount);
+                }
+
+                if(readyActive==1){ // this code activate only once
+                    printf("client screen auto active \n");
+                    readyActive=0;
+                }
+                // observe all client in server
+                printf("===================\n");
+                for(int i=0;i<playerCount;i++){
+                    printf("%s : ",playerInfo[i].username);
+                    for(int j=0; j< MAX_CARD; j++){
+                        if(playerInfo[i].cardDeck[j].used !=-1){
+                        printf(" [%c%c] ",playerInfo[i].cardDeck[j].cardType,playerInfo[i].cardDeck[j].cardStyle);
+                        }
+                    }
+                    printf("\ncard count : %d \n",playerInfo[i].cardCount);
+                }
+                printf("\ncurrent turn : %d\n",turn);
+                printf("===================\n");
+
+
+
+                
                 char commonScreen[100];
                 char currentDeckCard[20];
                 char **playerScreen=(char**)malloc((sizeof(char*))*playerCount);
@@ -1013,20 +1122,47 @@ void *createCardGameRoom(void *roomNumber){
                 SOCKET j; // send message to others
                 
                 for (int j = 0; j <playerCount; j++) {
-                    
+                    if(players[j]==turn){
+                        char yourTurn[]="\nYour turn input in 10 seconds >>";
+                        strcat(playerScreen[j],yourTurn);
+                    }
+                    else{
+                        char notYourTurn[]="\n[Not your turn. command ignored]";
+                        strcat(playerScreen[j],notYourTurn);
+                    }
+
                     send(players[j],playerScreen[j], strlen(playerScreen[j]), 0);
                     
                     
                 }
                 free(playerScreen);                
-                
+                continue;
             }//if FD_ISSET
 
-                continue;
+                
         }//for loop
     }//while
 }// func create thread
 
+/*
+void sendDeckTurn(char information[],card currentDeck , int turn){
+    char cardInfo[]="[";
+    char turnInfo[4];
+    strcpy(information,cardInfo);
+    cardInfo[0]=currentDeck.cardType;
+    strcat(information,cardInfo);
+    cardInfo[0]=currentDeck.cardStyle;
+    strcat(information,cardInfo);
+    
+    //cardInfo[0]='+';
+    //strcat(information,cardInfo);
+    //sprintf(turnInfo,"%d",turn);
+    //strcat(information,turnInfo);
+    
+    strcat(information,"]\n"); //ex) [card]\n
+    return;
+}
+*/
 void playerScreenMaker(char **playerScreen,userInfo *player,int playerCount,char commonScreen[]){
 
     for(int i=0; i<playerCount;i++){
@@ -1095,51 +1231,53 @@ void blindCard(char outputScreen[],userInfo playerInfo){
 
 }
 
-void takeCardFromClient(int cardPosition, card *playerDeck ){
-    printf("receving %c%c from player \n",playerDeck[cardPosition].cardType,playerDeck[cardPosition].cardStyle);
-    playerDeck[cardPosition].cardType='x';
-    playerDeck[cardPosition].cardStyle='x';
-    playerDeck[cardPosition].used= -1; //does not exist
+void takeCardFromClient(int cardPosition, userInfo *playerInfo ){
+    printf("receving %c%c from player \n",playerInfo->cardDeck[cardPosition].cardType,playerInfo->cardDeck[cardPosition].cardStyle);
+    playerInfo->cardDeck[cardPosition].cardType='x';// doesn't mean anything //just in case
+    playerInfo->cardDeck[cardPosition].cardStyle='x';
+    playerInfo->cardDeck[cardPosition].used= -1; //does not exist
+    playerInfo->cardCount--;
 }
 
-int changeTurn(int *players,int currentTurn){
+int changeTurn(userInfo *playerInfo,int currentTurn,int playerCount){
     printf("Prev turn : %d \n",currentTurn);
     for(int i=0;i<playerlimit;i++){
-        if (players[i]==currentTurn)
+        if (playerInfo[i].userNumber==currentTurn)
         {   
             while(1){
                 i++;
-                if(i==playerlimit)
+                if(i==playerCount)
                     i=0;
-                if(players[i]==-1)
+                if(playerInfo[i].userNumber == -1) // user does not exist
                     continue;
-                else{
-                    printf("Turn changed >> %d \n",players[i]);
-                    return players[i];
-                }
+
+                printf("Turn changed >> %d \n",playerInfo[i].userNumber);
+                return playerInfo[i].userNumber;
+                
             }
         }
         
     }
 }
 
-int checkClientCardExist(card inputCard, card *playerDeck ){
+int checkClientCardExist(char inputCard[], card *playerDeck ){
 
     for (int i=0;i<MAX_CARD;i++){
         if(playerDeck[i].used == 0){ // this space has card
-            if((inputCard.cardType==playerDeck[i].cardType)&&(inputCard.cardStyle==playerDeck[i].cardStyle))
+            if((inputCard[0]==playerDeck[i].cardType)&&(inputCard[1]==playerDeck[i].cardStyle))
                 return i; //exist return position of selected card
             else
                 continue;
         }
     }
-    return 0; //card not found
+    return -1; //card not found
 }
 
 
-int checkClientCardValid(card inputCard, card currentDeck){
+int checkClientCardValid(char inputCard[], card currentDeck){
 
-    if((inputCard.cardType==currentDeck.cardType)||(inputCard.cardStyle==currentDeck.cardStyle))
+
+    if((inputCard[0]==currentDeck.cardType)||(inputCard[1]==currentDeck.cardStyle))
         return 1; //possible
     else
         return 0; // condition of attk cards needed to be added
@@ -1161,7 +1299,7 @@ int cardDeckCounter(card *cardDeck){
 }
 
 void sendCardToClient(int cardCount, userInfo *playerInfo, card *cardDeck){
-    
+    //cardcount: ammount of card to send // playerinfo :target //cardDeck : deck 
     int nullCount=0;
 
     nullCount = cardDeckCounter(cardDeck);
@@ -1178,6 +1316,7 @@ void sendCardToClient(int cardCount, userInfo *playerInfo, card *cardDeck){
                     printf("cardDeck empty reshuffle active\n");
                     shuffleCard(cardDeck);
                     checkpoint=0;
+                    nullCount=0; // deck initialized
                 }
                 else{
                 checkpoint=j+1;// not to check from the start
@@ -1251,13 +1390,16 @@ void shuffleCard(card* cardDeck){
     }
     printf("card shuffle complete >> cardDeck ready\n");
 }
-
+/*
 void signalDetection(int sig){
-    if(sig ==SIGCONT){
+    if(sig ==SIGTERM){
     //printf("signal received.. termainating countdown..");
+    printf("signal received.. \n");
     start=1;
+    return;
     }   
 }
+*/
 int findDirectory(char username[]){
 
     DIR* dir;
@@ -1441,8 +1583,9 @@ int loginCheck(char receviedData[] ,int dataLength){
     if (dirFind==0)
         return 0; //error dir not found
     else{
-        loginConfirm = checkLoginFile(username,password);//login :1 error :0
-        if(loginConfirm){
+        loginConfirm = checkLoginFile(username,password);//login :1 error :0 multiLogin :-1
+        
+        if(loginConfirm==1){
             storeUserinfo(username);
             printf("[%s] login sucess\n",username);
         }
@@ -1487,77 +1630,87 @@ void storeUserPurpose(int userNumber,int purpose){
 }
 int checkLoginFile(char username[],char password[]){
 
-    FILE *fptr;
-    char userData[]="./USER_DATA";
-    char loginFile[]="";
-    char path[12+strlen(username)+1+5+1];//./USER_DATA/+ strlen(username)+/+login+null
-    strcpy(path,userData);
-    strcat(path,"/");
-    strcat(path,username);
-    strcat(path,"/");
-    strcat(path,"login");
-
-    fptr = fopen(path,"r");
-    if(fptr==NULL){
-        printf("FATAL ERROR \n");
-        printf("file >> %s read error \n",path);
-        return 0; // no file in dir 
-    }
-
-    char word[2]="\0";
-    char fileData[20];
-    char singleWord='a';
-    int wordCount=0;
-    int idMatch=0;
-
-    while(singleWord!=EOF){
-        singleWord=fgetc(fptr);
-        word[0]=singleWord;
-
-        if(word[0]=='\n' || word[0]==','){
-            word[0]='\0';
-            strcat(fileData,word); //add null
-            char compareBox[strlen(username)+1];
-            strcpy(compareBox,fileData);
-
+    char newUser[strlen(username)+1];
+    strcpy(newUser,username);
+    for (int i=0; i<userlimit;i++){
+        if(currentUsers[i].userNumber != -1){
+            if(strcmp(currentUsers[i].username,username)==0){
+                printf("username %s already logined \n",username);
+                return -1;
+            }
             
-            if(idMatch==0 &&strcmp(username,compareBox)==0){ //ID yet found 
-                printf("username : <%s> , fileID: <%s> match\n",username,fileData);
-                idMatch=1;
+        }
+        FILE *fptr;
+        char userData[]="./USER_DATA";
+        char loginFile[]="";
+        char path[12+strlen(username)+1+5+1];//./USER_DATA/+ strlen(username)+/+login+null
+        strcpy(path,userData);
+        strcat(path,"/");
+        strcat(path,username);
+        strcat(path,"/");
+        strcat(path,"login");
+
+        fptr = fopen(path,"r");
+        if(fptr==NULL){
+            printf("FATAL ERROR \n");
+            printf("file >> %s read error \n",path);
+            return 0; // no file in dir 
+        }
+
+        char word[2]="\0";
+        char fileData[20];
+        char singleWord='a';
+        int wordCount=0;
+        int idMatch=0;
+
+        while(singleWord!=EOF){
+            singleWord=fgetc(fptr);
+            word[0]=singleWord;
+
+            if(word[0]=='\n' || word[0]==','){
+                word[0]='\0';
+                strcat(fileData,word); //add null
+                char compareBox[strlen(username)+1];
+                strcpy(compareBox,fileData);
+
+
+                if(idMatch==0 &&strcmp(username,compareBox)==0){ //ID yet found 
+                    printf("username : <%s> , fileID: <%s> match\n",username,fileData);
+                    idMatch=1;
+                    wordCount=0;
+                    continue;
+                }
+                else if(idMatch==1 &&strcmp(password,compareBox)==0){// only activate when ID found
+                    fclose(fptr);
+                    printf("password match login process activate..\n");
+                    return 1; //match ID and PW found
+                }
+                else{
+                    fclose(fptr);
+                    printf("Wrong PW from client\n");
+                    return 0; //wring pw
+
+                }
                 wordCount=0;
                 continue;
             }
-            else if(idMatch==1 &&strcmp(password,compareBox)==0){// only activate when ID found
-                fclose(fptr);
-                printf("password match login process activate..\n");
-                return 1; //match ID and PW found
-            }
             else{
-                fclose(fptr);
-                printf("Wrong PW from client\n");
-                return 0; //wring pw
-
-            }
-            wordCount=0;
-            continue;
-        }
-        else{
-            if(wordCount==0){
-                strcpy(fileData,word);
+                if(wordCount==0){
+                    strcpy(fileData,word);
+                    wordCount++;
+                    continue;
+                }
+                strcat(fileData,word);
                 wordCount++;
-                continue;
-            }
-            strcat(fileData,word);
-            wordCount++;
-        } 
-        
+            } 
+
+        }
+        fclose(fptr);
+        printf("FATAL ERROR in login flie \n");
+        return 0; // if this activates whatever it is its an error
+
     }
-    fclose(fptr);
-    printf("FATAL ERROR in login flie \n");
-    return 0; // if this activates whatever it is its an error
-
 }
-
 
 //==================past====================//
 

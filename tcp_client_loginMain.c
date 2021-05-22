@@ -54,6 +54,9 @@ int submenu_cardgame();
 int submenu(int purpose);
 int menu();
 
+int inputPossibleCheck(char read[]);
+//void currentCardReceive(char read[]);
+int cardRequestCheck(char read[]);
 int waitForCardGame();
 
 typedef struct{
@@ -61,6 +64,11 @@ typedef struct{
     int create_success;
 }waitForGame;
 static waitForGame *waitForServer;
+
+static int additionalPlayer=0; // if 0 you are the one who created a room for card game
+
+//static int currentTurn;
+//static char currentDeck[2]; // type/style
 
 int main(int argc, char** argv) {
 
@@ -137,9 +145,13 @@ int main(int argc, char** argv) {
     printf("Connected.\n");
     printf("To send data, enter text followed by enter.\n");
 
-
+    fd_set master;
+    FD_SET(socket_peer, &master);
+    FD_SET(0, &master);
+    SOCKET max_socket = socket_peer;
 
     freeaddrinfo(peer_address);
+    //int screenActive=0;
     while(1) {
 
         if(showMenu==1){
@@ -156,16 +168,23 @@ int main(int argc, char** argv) {
             system("clear");
             continue;
         }
+        /*
+        if(gamestart==1&&screenActive==0){
+            screenActive=1;
+            char gameScreenRequest[]="@GAME_SCREEN_REQUEST@\n";
+            send(socket_peer, gameScreenRequest, strlen(gameScreenRequest), 0);
+            continue;
+        }
+        */
+        
         fd_set reads;
-        FD_ZERO(&reads);
-        FD_SET(socket_peer, &reads);
-        FD_SET(0, &reads);
+        reads = master;
 
         struct timeval timeout;
         timeout.tv_sec = 0;
         timeout.tv_usec = 100000;
 
-        if (select(socket_peer+1, &reads, 0, 0, &timeout) < 0) {
+        if (select(max_socket+1, &reads, 0, 0, &timeout) < 0) {
             fprintf(stderr, "select() failed. (%d)\n", GETSOCKETERRNO());
             return 1;
         }
@@ -176,10 +195,31 @@ int main(int argc, char** argv) {
             
             // activate only when game is running
             if(gamestart==1){
-                sleep(0.1);
+                /*
+                if(read[0]=='[' && read[bytes_received-2]==']'){
+                    //extractor
+                    printf("recevied %d bytes >> [%.*s]\n",bytes_received,bytes_received, read);
+                    currentCardReceive(read);
+                    continue;
+                }
+                */
+                //else{
+                //sleep(0.1);
+                if((read[0]=='@' && read[bytes_received-2]=='@')){
+                    printf("%.*s \n",bytes_received, read);
+                    char readyMessage[]="@ Ready @\n";
+                    send(socket_peer, readyMessage, strlen(readyMessage), 0);
+                    sleep(0.3);
+                    continue;
+                }
                 system("clear");
                 printf("%.*s \n",bytes_received, read);
+
+                //char informaionRequest[]="?turn and currnet deck?\n";
+                //send(socket_peer, informaionRequest, strlen(informaionRequest), 0);
+                //printf("screen request sent\n");
                 continue;
+                //}
             }
             //kill connnection or message from server
             if (bytes_received < 1 || (read[0]=='#' && read[bytes_received-2]=='#')) {
@@ -275,7 +315,7 @@ int main(int argc, char** argv) {
                     continue;
                 }
             }
-
+            //card game request
             if ((read[0]=='<' && read[bytes_received-2]=='>')){
                 
                 printf("%.*s\n", bytes_received,read);
@@ -286,11 +326,14 @@ int main(int argc, char** argv) {
                 waitForServer->create_success=0;
 
                 connectionReusult = waitForCardGame();
-
+                printf("game screen request to server \n");
+                //printf("connectionReusult : %d \n",connectionReusult);
                 //system("clear");
                 // do something with result 0 or 1 
                 if(connectionReusult){
+                    
                     gamestart=1;
+                    //printf("game start : %d \n",gamestart);
                 }
                 else{
                     showMenu=1;
@@ -299,20 +342,36 @@ int main(int argc, char** argv) {
                 continue;
             }
             
-            
-            
+            continue;
         }
-
         //stdin
         if(FD_ISSET(0, &reads)) {
             if(gamestart==1){
-                char read[4096];
-                if (!fgets(read, 4096, stdin)){ 
-                    printf("FATAL ERROR >> unproper input\n");
-                    break;
+                char read[50];
+                while(1){
+                    if (!fgets(read, 50, stdin)){ 
+                        printf("FATAL ERROR >> unproper input\n");
+                        break;
+                    }
+                    /*
+                    if(cardRequestCheck(read)&&inputPossibleCheck(read)){ // input valid check// input possible check
+                        break;
+                    }
+                    else
+                    */ 
+                    
+                    if((read[0]=='0' &&read[1]=='\n')||read[2]=='\n'){ // means no card to send request one card to server
+                        break;
+                    }
+                    
+                    /*
+                    else{
+                        printf("invalid input\n");
+                        continue;
+                    }
+                    */
                 }
-
-                //printf("Sending: %s", read);
+                printf("Sending: %s", read);
                 send(socket_peer, read, strlen(read), 0);
             }
             //int bytes_sent = send(socket_peer, read, strlen(read), 0);
@@ -326,9 +385,60 @@ int main(int argc, char** argv) {
     printf("Finished.\n");
     return 0;
 }
+/*
+void currentCardReceive(char read[]){// input is 100% [card+turn]\n
+    int idx=0;
+    int turnIdx=0;
+    int turnRead=0;
+    char turnReader[4]="\0\0\0";
+    currentDeck[0]=read[1]; //card Type
+    currentDeck[1]=read[2];//card Style
 
+    while(read[idx]!='\n'){
 
-
+        if(read[idx]=='+'){
+            turnRead=1;
+        }
+        
+        if(turnRead){
+            turnReader[turnIdx]=read[idx];
+            turnIdx++;
+        }
+        idx++;
+    }
+    currentTurn = atoi(turnReader);
+}
+*/
+/*
+int inputPossibleCheck(char read[]){
+    
+        read[0]=toupper(read[0]);
+        read[1]=tolower(read[1]);  
+        
+        if((read[0]==currentDeck[0])||(read[1]==currentDeck[1])){
+            return 1;
+        }
+        else
+            return 0; // no match invalid
+    
+}
+*/
+/*
+int cardRequestCheck(char read[]){
+    int idx=0;
+    while(1){
+        if(isalnum(read[idx]) && (idx<2)){
+            idx++;
+        }
+        else if(read[idx]=='\n' && idx==2){
+            return 1;
+        }
+        else{
+            return 0; // nor alpha,num \n then invalid input
+        }
+    }
+}
+*/
 int askingPurpose(){
     char userinput[20];
     int purpose=0;
@@ -367,11 +477,17 @@ int waitForCardGame(){
 
 
     char waitForRoom[]="waitingForRoom";
-    send(waitForServer->server, waitForRoom, strlen(waitForRoom), 0);
+    send(waitForServer->server, waitForRoom, strlen(waitForRoom), 0); // needed to activate 101 code
+    
+    fd_set reads_thread;
+    FD_ZERO(&reads_thread);
+    FD_SET(waitForServer->server, &reads_thread);
+    SOCKET max_socket = waitForServer->server;
     while(1){
-        fd_set reads_thread;
-        FD_ZERO(&reads_thread);
-        FD_SET(waitForServer->server, &reads_thread);
+        
+        fd_set read_in_loop;
+        read_in_loop = reads_thread;
+        
 
         int waiting=0;
         char read[100];
@@ -379,15 +495,20 @@ int waitForCardGame(){
         struct timeval timeout;
         timeout.tv_sec = 0;
         timeout.tv_usec = 100000;
-        if (select((waitForServer->server)+1, &reads_thread, 0, 0, &timeout) < 0) {
+        if (select(max_socket+1, &read_in_loop, 0, 0, &timeout) < 0) {
             fprintf(stderr, "select() failed. (%d)\n", GETSOCKETERRNO());
             return 1;
         }
 
     
-        if(FD_ISSET(waitForServer->server, &reads_thread)){
+        if(FD_ISSET(waitForServer->server, &read_in_loop)){
             bytes_received = recv(waitForServer->server, read, 100, 0);
-            if(read[0]=='<' && read[bytes_received-2]=='>'){
+            if(read[0]=='$' && read[bytes_received-2]=='$'){
+                additionalPlayer=1;// you entered waiting room which other made
+                continue;
+            }
+            
+            if(read[0]=='{' && read[bytes_received-2]=='}'){
                 if(read[1]=='#' && read[bytes_received-3]=='#'){
                     printf("%.*s \n",bytes_received, read);
                     sleep(1);
@@ -395,8 +516,13 @@ int waitForCardGame(){
                 }
                 else{
                     printf("%.*s \n",bytes_received, read);
-                    send(waitForServer->server, waitForRoom, strlen(waitForRoom), 0);
-                    sleep(1);
+                    if(additionalPlayer==0){
+                        send(waitForServer->server, waitForRoom, strlen(waitForRoom), 0);// needed to make thread from server      
+                    }
+                    else if(additionalPlayer==1){
+                        sleep(1);
+                        send(waitForServer->server, waitForRoom, strlen(waitForRoom), 0);// wait for room creator   
+                    }
                     return 1;
                     //go to game function 
                 }
