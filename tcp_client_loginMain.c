@@ -205,6 +205,44 @@ int main(int argc, char** argv) {
                 */
                 //else{
                 //sleep(0.1);
+                if(bytes_received < 1){
+                    system("clear");
+                    printf("connection closed by server>> game end \n");
+                    break;
+                }
+                if((read[0]=='!' && read[bytes_received-2]=='!')){
+                    printf("\n\nTime Out !!\n");
+                    char confirmMessage[]="! confirmed !\n";
+                    send(socket_peer, confirmMessage, strlen(confirmMessage), 0);
+                    continue;
+                }
+
+                if((read[0]=='#' && read[bytes_received-2]=='#')){
+                    system("clear");
+                    if(read[1]=='#' && read[bytes_received-3]=='#'){
+                        printf("\nOther player(s) eliminated you won!! \n");
+                    }
+                    else if(read[1]=='!' && read[bytes_received-3]=='!'){
+                        printf("\nYou Won!!\n");
+                    }
+                    else if(read[1]=='~' && read[bytes_received-3]=='~'){
+                        printf("\nYou Lose..\n");
+                    }
+                    else if(read[1]=='*' && read[bytes_received-3]=='*'){
+                        printf("\nYou Died\n");
+                    }
+                    sleep(1);
+                    printf("\nBack to Menu.. \n");
+                    sleep(1);
+                    /*
+                    char backToMenu[]="$ client back to menu $\n";
+                    send(socket_peer, backToMenu, strlen(backToMenu), 0);
+                    */
+                    gamestart=0;
+                    showMenu=1;
+                    continue;
+                }
+
                 if((read[0]=='@' && read[bytes_received-2]=='@')){
                     printf("%.*s \n",bytes_received, read);
                     char readyMessage[]="@ Ready @\n";
@@ -212,6 +250,7 @@ int main(int argc, char** argv) {
                     sleep(0.3);
                     continue;
                 }
+                
                 system("clear");
                 printf("%.*s \n",bytes_received, read);
 
@@ -341,7 +380,12 @@ int main(int argc, char** argv) {
 
                 continue;
             }
-            
+            //back to menu
+            if ((read[0]=='$' && read[bytes_received-2]=='$')){ 
+                printf("\n\n server ready to response\n\n");
+                continue;
+            }
+
             continue;
         }
         //stdin
@@ -360,7 +404,10 @@ int main(int argc, char** argv) {
                     else
                     */ 
                     
-                    if((read[0]=='0' &&read[1]=='\n')||read[2]=='\n'){ // means no card to send request one card to server
+                    if((read[0]=='0' &&read[1]=='\n')){ // means no card to send request one card to server
+                        break;
+                    }
+                    if(isalpha(read[0])&&isalnum(read[1])&&(read[2]=='\n')){
                         break;
                     }
                     
@@ -371,7 +418,7 @@ int main(int argc, char** argv) {
                     }
                     */
                 }
-                printf("Sending: %s", read);
+                //printf("Sending: %s", read);
                 send(socket_peer, read, strlen(read), 0);
             }
             //int bytes_sent = send(socket_peer, read, strlen(read), 0);
@@ -520,7 +567,7 @@ int waitForCardGame(){
                         send(waitForServer->server, waitForRoom, strlen(waitForRoom), 0);// needed to make thread from server      
                     }
                     else if(additionalPlayer==1){
-                        sleep(1);
+                        sleep(0.3);
                         send(waitForServer->server, waitForRoom, strlen(waitForRoom), 0);// wait for room creator   
                     }
                     return 1;

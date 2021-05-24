@@ -51,7 +51,7 @@
 #define CLOSESOCKET(s) close(s)
 #define SOCKET int
 #define GETSOCKETERRNO() (errno)
-#define SEM_NAME "/Time"
+//#define SEM_NAME "/Time"
 
 void *createCardGameRoom(void *roomNumber);
 void *waitingTimeOut();
@@ -102,6 +102,7 @@ const int MAX_CARD=15;
 const static int playerlimit=4;
 const static int userlimit=10;
 
+
 static int waitingLine[10]; //sameas userlimit changed cuz of compile error
 static int currentPlayers[10]={0};//default all 0
 static int playerSets[4]={-1,-1,-1,-1}; // max player is 4 // -1 means no player
@@ -131,10 +132,10 @@ static int roomCount=0;
 
 typedef struct{
     char cardType; // R (red) G (green) B (blue) Y (yellow)
-    char cardStyle;// 1~9 p (plus) j (jump) d (direction) a (attk2) s (attk3) q (ultimate attk)
+    char cardStyle;// 1~9 j (jump) p (plus) d (direction) a (attk2) s (attk3) q (ultimate attk)
     int attack;// .0 .2 .3
     int ultimate; //.0 .1
-    int used; // .-1 .0 .1 // -1 means "this space does not have card"
+    int used; // .-1 .0 .1 .2 // -1 means "this space does not have card" /2 means "card returned to cardDeck"
 }card;
 
 
@@ -143,8 +144,14 @@ typedef struct{
     char *username;
     int cardCount;
     card *cardDeck;
+    int warning; // if 2 >>  forced out
 }userInfo;
 
+typedef struct{
+    int timeOut; // 0: waiting  / 1: time over  
+    int roomNumber; //room number
+    int clientNumber; // client number
+}timeLimit_thread_data;
 
 //void sendDeckTurn(char information[],card currentDeck , int turn);
 void playerScreenMaker(char **playerScreen,userInfo *player,int playerCount,char commonScreen[]);
@@ -155,9 +162,16 @@ void cardToScreen(char outputScreen[],card currentCard);
 void cardsLeftInDeck(char commonScreen[],char cardLeft[]);
 int cardDeckCounter(card *cardDeck);
 
+void deleteCurrnetPlayer(int clientNumber);
+void addSpecialOccastionMessage(char *playerScreen,int styleIdx,char *inputClient,int attkPoint);
+int surviverCheck(userInfo *playerInfo,int playerCount);
+void playerEraser(userInfo *playerInfo, int clientIdx,int playerCount,card *cardDeck);
+int playerIdxFinder(userInfo *playerInfo, int client,int playerCount);
+void initializeSpecialOccastionList(int *specialOccasion, int sizeofList);
+void turnTableReverse(userInfo *playerInfo,int playerCount);
 int changeTurn(userInfo *playerInfo,int currentTurn,int playerCount);
-void takeCardFromClient(int cardPosition, userInfo *playerinfo );
-int checkClientCardValid(char inputCard[], card currentDeck);
+void takeCardFromClient(int cardPosition, userInfo *playerinfo, card *cardDeck );
+int checkClientCardValid(char inputCard[], card currentDeck,int attkPoint);
 int checkClientCardExist(char inputCard[], card *playerDeck );
 void sendCardToClient(int cardCount,userInfo *playerInfo, card *cardDeck);
 int checkCardCount(int cardCount, userInfo playerinfo);
@@ -167,6 +181,7 @@ static card *totalCard;
 const static int totalCardType=4;
 const static int totalCardStyle=15;
 
+static int clientInputChecker[5];// same with max card but wrote 5 cuz compile issue
 
 
 int main(int argc, char** argv) {
@@ -187,12 +202,20 @@ int main(int argc, char** argv) {
         waitingLine[i]=-1;
         //printf("[%d] num is : %d\n",i,currentUsers[i].userNumber); test code
     }
+     
 
 
+    
+    const int maxRoom=5;
+    
+
+    for(int i=0;i<maxRoom;i++){
+        clientInputChecker[i]=0;
+    }
+
+    pthread_t cardRoom[maxRoom];
 
     //int specialRequestClient[userlimit];
-    int maxRoom=5;
-    pthread_t cardRoom[maxRoom];
     int players[4]={-1,-1,-1,-1};
     int turn=-1;
     int purpose=-1;
@@ -352,38 +375,15 @@ int main(int argc, char** argv) {
                     } 
                     
                     FD_SET(socket_client, &master);
+
                     if (socket_client > max_socket)
                         max_socket = socket_client;
                     printf("connected.. \n");
-                    /*
-                    playerSetStore(players,socket_client);
-                    if(totalWaitingPlayer==0)
-                        turn=players[0];
-                        */
+
                     connectedClient++;
                     printf("current number of connected client : %d \n",connectedClient);
                     //ask purpose of connection
                     send(socket_client, askPurpose,strlen(askPurpose), 0);
-/*
-                    if(totalWaitingPlayer==1){
-                        printf("count start \n");
-                        int status;
-                    	status=pthread_create(&thread_id, NULL, waitingTimeOut, (void *)socket_client);
-                        if(status==-1){
-                    		fprintf(stderr,"PThread  Creation Error \n");
-                    		exit(0);
-                    	}
-                        pthread_detach(thread_id);
-
-                    }
-                    else if(totalWaitingPlayer>1){
-                        printf("sending  signal to pthread.. \n");
-                        signal(SIGTERM,signalDetection);
-                        pthread_kill(thread_id,SIGTERM);
-                        printf("count down terminated\n");
-                    }
-                    
-*/
 
                 } 
                 else {
@@ -397,13 +397,7 @@ int main(int argc, char** argv) {
                     if (bytes_received < 1) { 
                         printf("exit detected.. \n");
                         FD_CLR(i, &master);
-                        /*
-                        if (turn==i){
-                            turn=changeTurn(players,turn);
-                        }
-                    
-                        playerSetDelete(players, i);
-                        */
+
                         int deletedWaitingQueue=0; 
                         deleteUserinfo(i);
                         deletedWaitingQueue=deleteWaitingQueue(i);
@@ -421,18 +415,36 @@ int main(int argc, char** argv) {
                     }
 
 
+                    clientCode=i;
+
                     if(checkClientPlayingCard(i)){
                         printf("message from client %d >> %.*s \n",i ,bytes_received, read);
                         printf("client %d is playing card.. message ignored..\n",i);
                         continue; //ignore client playing card
                     }
+                    else if(read[0]=='<' && read[bytes_received-2]=='>'){
+                            if((read[1]=='=' && read[bytes_received-3]=='=')){
+                                char pingReceived[]="ping Recevied \n";
+                                send(clientCode,pingReceived, strlen(pingReceived), 0);
+                                continue;
+                        }
+                    }
                     else{
-                        printf("recevied <%d> >> %.*s form client %d \n",bytes_received,bytes_received, read,i);
+                        printf("[ recevied <%d> >> %.*s form client %d ]\n",bytes_received,bytes_received, read,i);
                     }
                     
                     
-                    clientCode=i;
-                    
+                    /*
+                    // client from card game came back
+                    if(read[0]=='$' && read[bytes_received-2]=='$'){
+                        printf("client %d waiting in menu \n",clientCode);
+                        char serverReady[]="$ Ready $\n";
+                        send(clientCode,serverReady, strlen(serverReady), 0);
+                        continue;
+                    }
+                    */
+
+
                     //menu request detector client by client
                     request=checkClientRequest(clientCode);
                     if(request>0){
@@ -642,7 +654,7 @@ int checkUserInfo(char *receviedData ,int dataLength){
     printf("ID : %s \nPW: : %s \n",username,password);
     
 
-
+clientInputChecker
 }
 */
 
@@ -826,10 +838,55 @@ void storeWaitingQueue(int client){
         }
     }
 }
+/*
+void *ping(){
+
+    char pingMessage[]="<self ping>\n";
+
+    while(1){
+
+        sleep(2);
+        send(0,pingMessage, strlen(pingMessage), 0);
+    }
+}
+*/
+
+void *countdown(void *arg){
+    
+    timeLimit_thread_data *thread_data = (timeLimit_thread_data*)arg;
+    int roomNumber = thread_data->roomNumber;
+    int clientNumber = thread_data->clientNumber;
+    //clientInputChecker[roomNumber-1]=0;
+    int timeLimit = 10; // default 20s
+    sleep(1);
+    for(int i=0; i < timeLimit; i++){
+        printf("client %d >> counting %d  \n",clientNumber,timeLimit - i);
+        //printf("client %d >> input checker inside thread :%d\n",clientNumber,clientInputChecker[roomNumber-1]);
+        
+        if(clientInputChecker[roomNumber-1]==1){ // -1 cuz romm Num starts from 1 but idx starts from 0 
+            printf("countdown terminated for client %d in room No. %d \n",clientNumber,roomNumber);
+            thread_data->timeOut=0;
+            clientInputChecker[roomNumber-1]=0;
+            pthread_exit(NULL);
+        }
+        sleep(1);
+        
+
+
+    }
+
+    printf("client %d in room No. %d time out \n",clientNumber,roomNumber);
+    char timeOutMessage[]="! Time Out !\n";
+    send(clientNumber,timeOutMessage, strlen(timeOutMessage), 0);
+    thread_data->timeOut=1;
+    clientInputChecker[roomNumber-1]=0;
+    pthread_exit(NULL);
+
+}
 
 void *waitingTimeOut(){
-    int waitingTime=6;
-    int addTime=3;
+    int waitingTime=8;
+    int addTime=2;
     int addTimecount=0;
     char failMessage[]="{# Message from server : match failed #}\n";
     char successMessage[]="{ match success game will start soon... }\n";
@@ -892,14 +949,28 @@ void *waitingTimeOut(){
 }
 
 void *createCardGameRoom(void *roomNumber){
-    int players[4];
+    int players[4]; // needed for storng client info 
     int *room=(int *)roomNumber;
-    int roomNum = *room;
-    int playerCount=0;
-    int survivers=0;
-    int turn =-1;
-    int initialCard=6;
-    
+    int roomNum = *room; // room number
+    int playerCount=0;  // total client strated card game
+    int survivers=0;    // playerCount - dropout count
+    int turn =-1;   //turn for card game
+    int initialCard=6; // select many cards to start with
+    int gameover=0; // 1 >> game over 2>> game end cuz of connection lost
+    int dropoutIdx=-1; // loser idx
+    int ultimateActivate=0; // 1: means ultimate
+
+    //jump /plus /direction /weak attk(a) /strong attk(s) /r g b y ultimate
+    int specialOccasion[]={0,0,0,0,0,0,0,0,0,0}; // needed for screenmaker
+    int changeTurnCount=1;//default turn changes once / 0 :extra turn(p) 2 : jump
+    int turnReverse=0;
+    int attkPoint=0;
+    int attackComplete=0; // 1 >> attkPoint to 0
+    int winnerIdx=-1;
+    int timeLimitActive =0; // 1>> active every time send new screen to players
+    //int timeOutActive=0; // 1>> chagnege turn code active only works per time out
+    //int lazyClientNumber=-1; // client time out 
+
     SOCKET max_socket=-1;
     
     card currentDeck;
@@ -927,6 +998,7 @@ void *createCardGameRoom(void *roomNumber){
    //master card is global
     FD_ZERO(&masterCard);
 
+
     for(int i=0;i<playerlimit;i++){
         players[i] = playerSets[i];
         if(players[i]!=-1){
@@ -942,6 +1014,8 @@ void *createCardGameRoom(void *roomNumber){
             playerCount++;
         }
     }
+    //FD_SET(0,&masterCard);
+
     survivers = playerCount; // survivers are remain players while playerCount only care how many players started this game
 
     userInfo *playerInfo = malloc((sizeof(userInfo))*(playerCount));
@@ -982,11 +1056,33 @@ void *createCardGameRoom(void *roomNumber){
     
     }
     */
+    // auto self ping
+    int status;
+    /*
+    pthread_t ping_thread;
+    printf("ping thread created in room No. %d\n",roomNum);
+    status=pthread_create(&ping_thread, NULL, ping, NULL);
+    if(status==-1){
+    	fprintf(stderr,"PThread  Creation Error \n");
+    	exit(0);
+    }
+    pthread_detach(ping_thread);
+*/
+    // thread for limiting input time
+    pthread_t timeLimit_thread;
+    
+    timeLimit_thread_data thread_data;
+    thread_data.roomNumber=roomNum;
+    thread_data.clientNumber=-1;
+    thread_data.timeOut=0; 
+    
 
     int readyActive=0;
     while(1){
         fd_set readInThread;
         readInThread = masterCard;
+
+
 
         //masterCard is global
         if (select(max_socket+1, &readInThread, 0, 0, 0) < 0) {
@@ -997,12 +1093,82 @@ void *createCardGameRoom(void *roomNumber){
 
         for(int i=1;i<=max_socket;i++){
             if (FD_ISSET(i, &readInThread)) {
-
+                
                 char read[1024];
                 int bytes_received = recv(i, read, 1024, 0);
-                printf("recevied <%d> : %.*s by client %d\n",bytes_received,bytes_received, read,i);
+                //printf("recevied <%d> : %.*s by client %d\n",bytes_received,bytes_received, read,i);
                 //printf("screenActive == %d\n",screenActive);
+                
+                if(thread_data.timeOut==1 && (read[0]=='!' && read[bytes_received-2]=='!')){
+                    //timeOutActive=1;
+                    int warnPlayerIdx;
+                    //lazyClientNumber=turn;
+                    thread_data.timeOut=0;
+                    //clientInputChecker[roomNum-1]=0;
+                    printf("waring to client %d in room No. %d \n",turn,roomNum);
+                    warnPlayerIdx= playerIdxFinder(playerInfo, turn ,playerCount);
+                    playerInfo[warnPlayerIdx].warning++;
+                    readyActive=-1; // skip card check
+                    //give warning and one card with force
+                    if((playerInfo[warnPlayerIdx].warning==2)||(playerInfo[warnPlayerIdx].cardCount==15||playerInfo[warnPlayerIdx].cardCount+attkPoint>15)){
+                        survivers--;
+                        char forcedExit[]="#* GET OUT *#\n";
+                        send(playerInfo[warnPlayerIdx].userNumber,forcedExit,strlen(forcedExit),0);
 
+                        printf("Erasing player informaion ] client %d in room No . %d \n",playerInfo[warnPlayerIdx].userNumber,roomNum);
+                        playerEraser(playerInfo, warnPlayerIdx,playerCount,cardDeck);
+                        printf("reconnect client : %d in room No. %d to main thread \n",playerInfo[warnPlayerIdx].userNumber,roomNum);
+                        FD_SET(playerInfo[warnPlayerIdx].userNumber,&master);// reconnect with main thread
+                        deleteCurrnetPlayer(playerInfo[warnPlayerIdx].userNumber);
+                        if(survivers==1){
+                            gameover=2;
+                        }
+                    }
+                    else if(attkPoint>0){
+                        printf("card damage : %d to client :%d in room No. %d\n",attkPoint,i,roomNum);
+                        sendCardToClient(attkPoint,&playerInfo[warnPlayerIdx],cardDeck);
+                        attackComplete=1;
+                        specialOccasion[9]=1;
+                    }
+                    else{
+                        sendCardToClient(1,&playerInfo[warnPlayerIdx],cardDeck);
+                    }
+                    printf("client %d time out turn changed\n",turn);
+                    turn = changeTurn(playerInfo,turn,playerCount);
+                }
+/*
+                if((i==lazyClientNumber)&&(timeOutActive==1)){
+                    timeOutActive=0; //to defualt
+                    lazyClientNumber=-1;
+                    turn = changeTurn(playerInfo,turn,playerCount);
+                    
+                }
+*/
+                /*
+                if(i==0){
+                    printf("\nself auto ping >> %.*s \n",bytes_received, read);
+                    continue;
+                }
+                */
+                
+                if(bytes_received<1){// client terminated connection
+                    printf("client %d exited from card game room No. %d \n",i,roomNum);
+                    survivers--;
+                    dropoutIdx = playerIdxFinder(playerInfo, i ,playerCount);
+                    printf("Erasing player informaion ] client %d in room No . %d \n",playerInfo[dropoutIdx].userNumber,roomNum);
+                    playerEraser(playerInfo, dropoutIdx,playerCount,cardDeck);
+                    printf("reconnect client : %d in room No. %d to main thread \n",playerInfo[dropoutIdx].userNumber,roomNum);
+                    FD_SET(playerInfo[dropoutIdx].userNumber,&master);// reconnect with main thread
+                    deleteCurrnetPlayer(playerInfo[dropoutIdx].userNumber);
+                    if(survivers==1){
+                        
+                        gameover=2;
+                        //break;
+                    }
+                    turn = changeTurn(playerInfo,turn,playerCount);
+                    readyActive=-1;// player terminated connection skip card check
+                }
+                
 
                 
                 // this code activates only once
@@ -1028,77 +1194,254 @@ void *createCardGameRoom(void *roomNumber){
                     continue;
                 }
                 */
-                if(readyActive==0){
+                if(readyActive==0){ // code for checking card input from client
                     if(turn!=i){ //ignore client if not turn
                         printf("current turn client>> %d ignore client %d \n",turn,i);
                         continue;
                     }
+                    
+
                     //function of cards
                     int cardPosition=-1;
-                    for (int user=0;user<playerCount;user++){
-                    if(playerInfo[user].userNumber==turn){
-                        if(bytes_received > 2){
-                            read[0]=toupper(read[0]); // type is always upper alpha
-                            read[1]=tolower(read[1]);  // style is always lower alpha or number
-                            //compare input card with currentDeck card 1: possible 0: invalid
-                            if(checkClientCardValid(read,currentDeck)){ 
-                                printf("input compare : possible >> card Exist check active \n");
-                                //card exist check
-                                cardPosition = checkClientCardExist(read, playerInfo[user].cardDeck );
-                                if(cardPosition==-1){
-                                    printf("nonexist input from client %d in room No. %d>> ignored\n",i,roomNum);
-                                    continue;
-                                }
-                                else{
-                                printf("take [%.*s] from client %d in room No. %d\n",2,read,i,roomNum);
-                                printf("change current Deck to [%.*s]\n",2,read);
-                                currentDeck = playerInfo[user].cardDeck[cardPosition];
-                                takeCardFromClient(cardPosition, &playerInfo[user]);
-                                
-                                break;
-                                }
-                            }
-                            else{
-                                printf("invalid input from client %d in room No. %d>> ignored\n",i,roomNum);
+                    int user;
+                    user = playerIdxFinder(playerInfo,i,playerCount);
+                    
+                    if(bytes_received > 2){
+                        read[0]=toupper(read[0]); // type is always upper alpha
+                        read[1]=tolower(read[1]);  // style is always lower alpha or number
+                        //compare input card with currentDeck card 1: possible 0: invalid
+                        if(checkClientCardValid(read,currentDeck,attkPoint)){ 
+                            printf("input compare : possible >> card Exist check active \n");
+                            //card exist check
+                            cardPosition = checkClientCardExist(read, playerInfo[user].cardDeck );
+                            if(cardPosition==-1){
+                                printf("nonexist input from client %d in room No. %d>> ignored\n",i,roomNum);
                                 continue;
                             }
+                            else{
+                            printf("take [%.*s] from client %d in room No. %d\n",2,read,i,roomNum);
+                            printf("change current Deck to [%.*s]\n",2,read);
+                            currentDeck = playerInfo[user].cardDeck[cardPosition];
+                            takeCardFromClient(cardPosition, &playerInfo[user],cardDeck);
+                            if(playerInfo[user].cardCount==0){ // card all used
+                                winnerIdx=user;// store winner idx
+                                gameover=1;
+                            }
+                            //break;
+                            }
                         }
-                        else if(bytes_received==2){ 
-                            printf("card request from client %d in room No. %d\n",i,roomNum);
-                            sendCardToClient(1,&playerInfo[user],cardDeck);// client requested a card
-                            break;
-                        }
-                        else{// input less than 2 is invalid
+                        else{
                             printf("invalid input from client %d in room No. %d>> ignored\n",i,roomNum);
                             continue;
                         }
                     }
-                }
+                    else if((bytes_received==2)&&(read[0]=='0')&&(read[1]=='\n')){  // 0\n is request card
+                        if(attkPoint==0){ //normal card send
+                            if(playerInfo[user].cardCount == MAX_CARD){
+                                printf("client %d in room No. %d has maximum card >> request refused \n",i,roomNum);
+                                continue;
+                            }
+                            printf("card request from client %d in room No. %d\n",i,roomNum);
+                            sendCardToClient(1,&playerInfo[user],cardDeck);// client requested a card
+                            //break;
+                        }
+                        else{ //attacked by other player
+                            attackComplete=1;
+                            if(attkPoint+playerInfo[user].cardCount<16){
+                                printf("card damage : %d to client :%d in room No. %d\n",attkPoint,i,roomNum);
+                                sendCardToClient(attkPoint,&playerInfo[user],cardDeck);// damaged
+                                specialOccasion[9]=1;
+                            //break;
+                            }
+                            else{
+                                printf("client : %d in room No. %d card overflow >> RIP \n",i,roomNum);
+                                survivers--;
+                                // send message to dead user and ersase informaion
+                                dropoutIdx = playerIdxFinder(playerInfo, i ,playerCount);
+                                char cardOverflowMessage[]="#* you died *#\n";
+                                send(playerInfo[dropoutIdx].userNumber, cardOverflowMessage, strlen(cardOverflowMessage), 0);
+                                printf("Erasing player informaion ] client %d in room No . %d \n",playerInfo[dropoutIdx].userNumber,roomNum);
+                                playerEraser(playerInfo, dropoutIdx,playerCount,cardDeck);
+                                printf("reconnect client : %d to main thread \n",playerInfo[dropoutIdx].userNumber);
+                                FD_SET(playerInfo[dropoutIdx].userNumber,&master);// reconnect with main thread
+                                deleteCurrnetPlayer(playerInfo[dropoutIdx].userNumber);
+                                if(survivers==1){
+                                    gameover=2;
+                                }
+                                //break;
+                            }
+                        }
+                    }
+                    else{// input less than 2 is invalid
+                        printf("invalid input from client %d in room No. %d>> ignored\n",i,roomNum);
+                        continue;
+                    }
+                        
+                    
+                    
+                    //countdown stop 
+                    printf("<valid data confirmed countdown stop> \n");
+                    //printf("client input : %.*s",bytes_received, read);
+                    clientInputChecker[roomNum-1]=1;
+                    //printf("client input checker outside thread :%d\n",clientInputChecker[roomNum-1]);
 
-                        //change turn 
-                        turn = changeTurn(playerInfo,turn,playerCount);
-                }
+
+                    // check if client cardCount is over 15 or reached 0
+
+                     //here
+
+                    // activate 100% after valid input from client then take input card from client
+                    // special card detector 
+                    //    jump /plus /direction /weak attk(a) /strong attk(s) /r g b y ultimate 
+                    // idx: 0    1      2             3               4        5 6 7 8   
+                    switch(read[1]){
+                        case 'j': 
+                            changeTurnCount=2;
+                            specialOccasion[0]=1;
+                            break;                         
+                        case 'p': 
+                            changeTurnCount=0;
+                            specialOccasion[1]=1;
+                            break;    
+                        case 'd': 
+                            turnReverse=1;
+                            specialOccasion[2]=1;
+                            break; 
+                        case 'a': 
+                            attkPoint+=2;
+                            specialOccasion[3]=1;
+                            break;
+                        case 's': 
+                            attkPoint+=3;
+                            specialOccasion[4]=1;
+                            break;
+                        case 'q': 
+                            ultimateActivate=1;
+                    }
+                    if(ultimateActivate){
+                        ultimateActivate=0;
+                        switch(read[0]){
+                            case 'R':
+                                attkPoint+=5;
+                                specialOccasion[5]=1;
+                            break;
+                            case 'G':
+                                turnReverse=1;
+                                specialOccasion[6]=1;
+                            break;                        
+                            case 'B':
+                                attkPoint=0;
+                                specialOccasion[7]=1;
+                            break;                        
+                            case 'Y':
+                                specialOccasion[8]=1;
+                            break;                        
+                        }
+                    }
+
+                    if(turnReverse==1){
+                        turnTableReverse(playerInfo,playerCount);
+                    }
+
+
+                    //change turn 
+                    if(changeTurnCount>0){ // 0:extra turn / 1: normal / 2: jump
+                        for(int turnCount=0;turnCount<changeTurnCount;turnCount++){
+                            turn = changeTurn(playerInfo,turn,playerCount);
+                        }
+                        
+                    }
+
+
+                    changeTurnCount=1;//back to default
+                    turnReverse=0;
+                }// if (readyActive ==0)
+
+
 
                 if(readyActive==1){ // this code activate only once
                     printf("client screen auto active \n");
+                    
+                    // 1st countdown
+                    printf("thread created countdown start\n");
+                    thread_data.clientNumber=turn;
+            	    status=pthread_create(&timeLimit_thread, NULL, countdown,(void *)&thread_data);
+                    if(status==-1){
+            		    fprintf(stderr,"PThread  Creation Error \n");
+            		    exit(0);
+            	    }
+                    pthread_detach(timeLimit_thread);                
+                    //timeLimitActive=1;
+
                     readyActive=0;
                 }
+                
+                if(readyActive==-1){//this code activates only when player terminates connectiton
+                    readyActive=0;  // useage : skip card check 
+                }
+
                 // observe all client in server
                 printf("===================\n");
-                for(int i=0;i<playerCount;i++){
-                    printf("%s : ",playerInfo[i].username);
-                    for(int j=0; j< MAX_CARD; j++){
-                        if(playerInfo[i].cardDeck[j].used !=-1){
-                        printf(" [%c%c] ",playerInfo[i].cardDeck[j].cardType,playerInfo[i].cardDeck[j].cardStyle);
+                for(int idx=0;idx<playerCount;idx++){
+                    printf("%s : ",playerInfo[idx].username);
+                    if(playerInfo[idx].cardCount != -1){
+                        for(int j=0; j< MAX_CARD; j++){
+                            if(playerInfo[idx].cardDeck[j].used !=-1){
+                            printf(" [%c%c] ",playerInfo[idx].cardDeck[j].cardType,playerInfo[idx].cardDeck[j].cardStyle);
+                            }
                         }
                     }
-                    printf("\ncard count : %d \n",playerInfo[i].cardCount);
+                    else{
+                        printf(" R.I.P :( \n");
+                    }
+                    printf("\ncard count : %d \n",playerInfo[idx].cardCount);
                 }
+                printf("currnet deck card [%.*s] \n",2,read);
                 printf("\ncurrent turn : %d\n",turn);
                 printf("===================\n");
 
+                //file store code right here@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+
+                //here
 
 
+                //active when gameover
+                if(gameover ==1){ // game over some one used all cards
+                    for(int idx=0;idx<playerCount;idx++){
+                        if(playerInfo[idx].cardCount!=-1){
+                            if(idx == winnerIdx){
+                                char winnermessage[]="#! you won !#\n";
+                                send(playerInfo[winnerIdx].userNumber,winnermessage,strlen(winnermessage),0);
+                            }
+                            else{
+                                char losermessage[]="#~ you lose ~#\n";
+                                send(playerInfo[idx].userNumber,losermessage,strlen(losermessage),0);
+                            }
+                            printf("Erasing player informaion ] client %d in room No . %d \n",playerInfo[idx].userNumber,roomNum);
+                            playerEraser(playerInfo, dropoutIdx,playerCount,cardDeck);
+                            printf("reconnect client : %d in room No. %d to main thread \n",playerInfo[idx].userNumber,roomNum);
+                            FD_SET(playerInfo[idx].userNumber,&master);
+                            deleteCurrnetPlayer(playerInfo[idx].userNumber);
+                        }
+                    }
+                    break;
+                }
+                
+                if(gameover ==2){// gameover cuz only one left
+                    clientInputChecker[roomNum-1]=1;
+                    winnerIdx=surviverCheck(playerInfo,playerCount);
+                    printf("only one player left >> game terminated \n");
+                    printf("winner : client %d in room No. %d sending message..\n",playerInfo[winnerIdx].userNumber,roomNum);
+                    char surrenderVictory[]="## other player eliminated ##\n";
+                    send(playerInfo[winnerIdx].userNumber,surrenderVictory,strlen(surrenderVictory),0);
+                    
+                    printf("Erasing player informaion ] client %d in room No . %d \n",playerInfo[winnerIdx].userNumber,roomNum);
+                    playerEraser(playerInfo, winnerIdx,playerCount,cardDeck);
+                    printf("reconnect client : %d in room No. %d to main thread \n",playerInfo[winnerIdx].userNumber,roomNum);
+                    FD_SET(playerInfo[winnerIdx].userNumber,&master);// reconnect with main thread    
+                    deleteCurrnetPlayer(playerInfo[winnerIdx].userNumber);
+                    break;
+                }
                 
                 char commonScreen[100];
                 char currentDeckCard[20];
@@ -1111,6 +1454,8 @@ void *createCardGameRoom(void *roomNumber){
                 int nullCount=0;
                 int cardDeckLeft=0;
                 char cardLeft[3];
+                
+
                 nullCount = cardDeckCounter(cardDeck);
                 cardDeckLeft = totalCardStyle*totalCardType -nullCount;
                 sprintf(cardLeft,"%d",cardDeckLeft);
@@ -1118,30 +1463,109 @@ void *createCardGameRoom(void *roomNumber){
                 cardsLeftInDeck(commonScreen,cardLeft);
                 currnetCardInDeck(commonScreen,currentDeck);
                 playerScreenMaker(playerScreen,playerInfo,playerCount,commonScreen);
+                
+                // special card message create / detect special card info
+                int inputClientIdx=-1;
+                inputClientIdx =playerIdxFinder(playerInfo, i ,playerCount);
+                
+                char *specialOccasionClientName= playerInfo[inputClientIdx].username;
+
+                int specialOccasionCount=(int)(sizeof(specialOccasion)/sizeof(specialOccasion[0]));
+                int styleIdx=-1;
+                for(int idx=0;idx<specialOccasionCount;idx++){
+                    if(specialOccasion[idx]==1){
+                        styleIdx=idx;
+                        break;
+                    }
+                }
 
                 SOCKET j; // send message to others
                 
                 for (int j = 0; j <playerCount; j++) {
-                    if(players[j]==turn){
-                        char yourTurn[]="\nYour turn input in 10 seconds >>";
-                        strcat(playerScreen[j],yourTurn);
-                    }
-                    else{
-                        char notYourTurn[]="\n[Not your turn. command ignored]";
-                        strcat(playerScreen[j],notYourTurn);
-                    }
+                    if(playerInfo[j].cardCount!=-1){
+                        if(styleIdx != -1){ // add special message if something happened
+                            addSpecialOccastionMessage(playerScreen[j],styleIdx,specialOccasionClientName,attkPoint);
+                        }
 
-                    send(players[j],playerScreen[j], strlen(playerScreen[j]), 0);
-                    
+                        if(dropoutIdx!= -1){ // dead user 
+                            strcat(playerScreen[j],playerInfo[dropoutIdx].username);
+                            strcat(playerScreen[j]," dropout from game..\n");
+                        }
+                        
+                        if(playerInfo[j].userNumber==turn){
+                            char yourTurn[]="\nYour turn >>";
+                            strcat(playerScreen[j],yourTurn);
+                        }
+                        else{
+                            char notYourTurn[]="\n[Not your turn. command ignored]";
+                            strcat(playerScreen[j],notYourTurn);
+                        }
+
+
+                        send(playerInfo[j].userNumber,playerScreen[j], strlen(playerScreen[j]), 0);
+                    }
                     
                 }
-                free(playerScreen);                
+                //timeLimitActive=1;
+                dropoutIdx=-1;// default
+                if(attackComplete==1){
+                    attackComplete=0;
+
+                    attkPoint =0; //after attack atk point 0
+                }
+                initializeSpecialOccastionList(specialOccasion,(int)(sizeof(specialOccasion)/sizeof(specialOccasion[0])));
+                free(playerScreen);  
+
+                // new count down start
+                if(timeLimitActive==0){ // 1st skip 
+                    timeLimitActive=1;
+                }
+                else if(timeLimitActive==1){ //activate from 2nd client input permanently
+                    //reset to default and pass out turn
+                    thread_data.clientNumber = turn;
+
+                    printf("thread created countdown start\n");
+                    sleep(1);
+                    if(survivers >1){
+            	    status=pthread_create(&timeLimit_thread, NULL, countdown,(void *)&thread_data);
+                    if(status==-1){
+            		    fprintf(stderr,"PThread  Creation Error \n");
+            		    exit(0);
+            	    }
+                    pthread_detach(timeLimit_thread);
+                    int res;
+                    pthread_join(timeLimit_thread,(void**) &res); 
+                    }
+                    else{
+                        printf("only one surviver left countdown disabled \n");
+                    }
+                }
+
+
+            
                 continue;
             }//if FD_ISSET
 
                 
         }//for loop
+
+        if(gameover>0){
+            printf(" game over : %d active >>break while loop  \n",gameover);
+            break;
+        }
+
     }//while
+    printf("while loop in room No. %d breaked \n",roomNum);
+    printf("GAME OVER in room No. %d \n",roomNum);
+    printf("memory free active\n");
+    sleep(1.1);
+    clientInputChecker[roomNum-1]=0;
+    free(cardDeck);
+    free(usedCardDeck);
+    free(playerInfo);
+    free(playerDeck);
+    pthread_exit(NULL);
+
 }// func create thread
 
 /*
@@ -1163,18 +1587,175 @@ void sendDeckTurn(char information[],card currentDeck , int turn){
     return;
 }
 */
-void playerScreenMaker(char **playerScreen,userInfo *player,int playerCount,char commonScreen[]){
 
-    for(int i=0; i<playerCount;i++){
-        strcpy(playerScreen[i],commonScreen);
-        printCard(playerScreen[i],player[i]);
-        for(int j=0;j<playerCount;j++){
-            if(i!=j){
-                
-                blindCard(playerScreen[i],player[j]);
+void deleteCurrnetPlayer(int clientNumber){
+
+    for(int i=0;i<userlimit;i++){
+        if(currentPlayers[i]== clientNumber){
+            currentPlayers[i]=0; //disable
+            break; 
+        }
+    }
+}
+
+void addSpecialOccastionMessage(char *playerScreen,int styleIdx,char *inputClient,int attkPoint){
+
+    /*
+    if(styleIdx==-1){ // no special style 
+        return;
+    }
+    */
+    char ATKPoint[4];
+    sprintf(ATKPoint,"%d",attkPoint);
+
+    char specialOcassionMessage[100];
+    switch (styleIdx){
+        case 0:
+            strcpy(specialOcassionMessage,"Jump from player : ");
+            strcat(specialOcassionMessage, inputClient);
+            break;
+
+        case 1:
+            strcpy(specialOcassionMessage,"extra turn for player : ");
+            strcat(specialOcassionMessage, inputClient);
+            break;            
+        case 2:    
+            strcpy(specialOcassionMessage,"turn table reverse from player : ");
+            strcat(specialOcassionMessage, inputClient);
+            break;
+        case 3:            
+            strcpy(specialOcassionMessage,"Attack +2 from player : ");
+            strcat(specialOcassionMessage, inputClient);
+            strcat(specialOcassionMessage," (total ATK point : ");
+            strcat(specialOcassionMessage,ATKPoint);
+            strcat(specialOcassionMessage," )");
+            break;
+        case 4:            
+            strcpy(specialOcassionMessage,"Attack +3 from player : ");
+            strcat(specialOcassionMessage, inputClient);
+            strcat(specialOcassionMessage," (total ATK point : ");
+            strcat(specialOcassionMessage,ATKPoint);
+            strcat(specialOcassionMessage," )");
+            break;            
+        case 9:
+            strcpy(specialOcassionMessage,"player : ");
+            strcat(specialOcassionMessage, inputClient);
+            strcat(specialOcassionMessage," damaged ");
+            strcat(specialOcassionMessage,ATKPoint);
+            strcat(specialOcassionMessage," points");
+            break;
+        default:
+            //printf("in switch special occastion >> Idx %d (5~8 is ultimate)\n ",styleIdx);
+            break;
+
+    }
+
+    if(styleIdx>4 && styleIdx<9){
+        if(styleIdx==5){
+            strcpy(specialOcassionMessage,"[Red Ultimate] Attack +5 from player : ");
+            strcat(specialOcassionMessage, inputClient);
+            strcat(specialOcassionMessage," (total ATK point : ");
+            strcat(specialOcassionMessage,ATKPoint);
+            strcat(specialOcassionMessage," )");
+        }
+        else if(styleIdx==6){   
+            strcpy(specialOcassionMessage,"[Green Ultimate] Reflection from player : ");
+            strcat(specialOcassionMessage, inputClient);
+            if(attkPoint>0){
+                strcat(specialOcassionMessage," (total ATK point : ");
+                strcat(specialOcassionMessage,ATKPoint);
+                strcat(specialOcassionMessage," )");                
+            }            
+        }
+        else if(styleIdx==7){    
+            strcpy(specialOcassionMessage,"[Blue Ultimate] Block from player : ");
+            strcat(specialOcassionMessage, inputClient);
+            strcat(specialOcassionMessage, " ATK point disabled ");
+        }
+        else if(styleIdx==8){    
+            strcpy(specialOcassionMessage,"[Yellow Ultimate] Dodge from player : ");
+            strcat(specialOcassionMessage, inputClient);
+            if(attkPoint>0){
+                strcat(specialOcassionMessage," (total ATK point : ");
+                strcat(specialOcassionMessage,ATKPoint);
+                strcat(specialOcassionMessage," )");                
             }
         }
+    }
 
+
+    strcat(specialOcassionMessage,"\n");
+    strcat(playerScreen,specialOcassionMessage);
+}
+
+int surviverCheck(userInfo *playerInfo,int playerCount){
+    for(int i=0;i<playerCount;i++){
+        if(playerInfo[i].cardCount !=-1){
+            return i; //return surviver idx
+        }   
+    }
+}
+
+int playerIdxFinder(userInfo *playerInfo, int client,int playerCount){
+    for(int i=0;i<playerCount;i++){
+        if(playerInfo[i].userNumber==client){
+            return i; //return client userInfo idx
+        }   
+    }
+}
+
+void playerEraser(userInfo *playerInfo, int clientIdx,int playerCount,card *cardDeck){
+    int playerIdx=clientIdx;
+    //playerInfo[playerIdx].userNumber = -1; //needed for screen maker
+
+    int cardNeedToRetrive=playerInfo[playerIdx].cardCount;
+    int retreivedCard=0;
+    int cardIdx=0;
+    while(retreivedCard<cardNeedToRetrive){//retrieve all card from client
+        if(playerInfo[playerIdx].cardDeck[cardIdx].used==0){
+            takeCardFromClient(cardIdx,&playerInfo[playerIdx],cardDeck);
+            retreivedCard++;
+        }
+        else{
+            cardIdx++;
+        }
+    }
+    playerInfo[playerIdx].cardCount=-1;// needed to print dead from screen maker
+    FD_CLR(playerInfo[playerIdx].userNumber,&masterCard);
+    //CLOSESOCKET(client);
+
+}
+
+void initializeSpecialOccastionList(int *specialOccasion,int sizeofList){
+    int specialOccastionTypeCount =sizeofList; 
+    for(int i=0;i<specialOccastionTypeCount;i++){
+        specialOccasion[i]=0;
+    }
+}
+
+void turnTableReverse(userInfo *playerInfo,int playerCount){
+    int reverseCount = (int)(playerCount/2);
+    userInfo tmp;
+    for(int i=0;i<reverseCount;i++){
+        tmp =playerInfo[i];
+        playerInfo[i]=playerInfo[(playerCount-1)-i];
+        playerInfo[(playerCount-1)-i]=tmp;       
+    }
+}
+
+void playerScreenMaker(char **playerScreen,userInfo *playerInfo,int playerCount,char commonScreen[]){
+
+    for(int i=0; i<playerCount;i++){
+        if(playerInfo[i].cardCount!=-1){
+            strcpy(playerScreen[i],commonScreen);
+            printCard(playerScreen[i],playerInfo[i]);
+            for(int j=0;j<playerCount;j++){
+                if(i!=j){
+
+                    blindCard(playerScreen[i],playerInfo[j]);
+                }
+            }
+        }
     }
 }
 
@@ -1223,16 +1804,27 @@ void blindCard(char outputScreen[],userInfo playerInfo){
     strcat(outputScreen,"=================\n");
     strcat(outputScreen,playerInfo.username);
     strcat(outputScreen," : ");
-
-    for(int i=0;i<playerInfo.cardCount;i++){
-        strcat(outputScreen," [ ?? ] ");
+    
+    if(playerInfo.cardCount!=-1){
+        for(int i=0;i<playerInfo.cardCount;i++){
+            strcat(outputScreen," [ ?? ] ");
+        }
+        strcat(outputScreen,"\n");
     }
-    strcat(outputScreen,"\n");
-
+    else{
+        strcat(outputScreen," R.I.P :( \n");
+    }
 }
 
-void takeCardFromClient(int cardPosition, userInfo *playerInfo ){
+void takeCardFromClient(int cardPosition, userInfo *playerInfo, card *cardDeck){
     printf("receving %c%c from player \n",playerInfo->cardDeck[cardPosition].cardType,playerInfo->cardDeck[cardPosition].cardStyle);
+    
+    for(int i=0;i<totalCardType*totalCardStyle;i++){
+        if((cardDeck[i].cardType==playerInfo->cardDeck[cardPosition].cardType)&&(cardDeck[i].cardStyle==playerInfo->cardDeck[cardPosition].cardStyle)){
+            cardDeck[i].used =2;// returned
+        }
+    }
+    
     playerInfo->cardDeck[cardPosition].cardType='x';// doesn't mean anything //just in case
     playerInfo->cardDeck[cardPosition].cardStyle='x';
     playerInfo->cardDeck[cardPosition].used= -1; //does not exist
@@ -1248,7 +1840,7 @@ int changeTurn(userInfo *playerInfo,int currentTurn,int playerCount){
                 i++;
                 if(i==playerCount)
                     i=0;
-                if(playerInfo[i].userNumber == -1) // user does not exist
+                if(playerInfo[i].cardCount == -1) // user does not exist
                     continue;
 
                 printf("Turn changed >> %d \n",playerInfo[i].userNumber);
@@ -1274,21 +1866,58 @@ int checkClientCardExist(char inputCard[], card *playerDeck ){
 }
 
 
-int checkClientCardValid(char inputCard[], card currentDeck){
+int checkClientCardValid(char inputCard[], card currentDeck,int attkPoint){
 
+    if(inputCard[0]=='Y' && inputCard[1]=='q')
+        return 1; //dodge always possible
 
-    if((inputCard[0]==currentDeck.cardType)||(inputCard[1]==currentDeck.cardStyle))
-        return 1; //possible
-    else
-        return 0; // condition of attk cards needed to be added
+    if(attkPoint==0){
+        if((inputCard[0]==currentDeck.cardType)||(inputCard[1]==currentDeck.cardStyle)){
+            return 1;
+        }
+        else
+            return 0;
+    }
+    else if(attkPoint>0){ // attk active
+        if((inputCard[1]=='q')&&(currentDeck.cardStyle =='a'||currentDeck.cardStyle=='s')){
+            return 1; // q> a s  attk active
+        }
+        else if((inputCard[1]=='s')&&(currentDeck.cardStyle=='a')){
+            return 1; // s> a   attk active
+        }
+
+        if((inputCard[1]=='a')&&(currentDeck.cardStyle=='s')){
+            return 0;
+        }       // a cannot beat s 
+
+        if((inputCard[1]=='a' ||(inputCard[1]=='s'))&&(currentDeck.cardStyle=='q')){
+            if(currentDeck.cardType == 'R')
+                return 0; // rq is invincible
+            else if(inputCard[0]==currentDeck.cardType){
+                return 1; // other bq gq yq attk still active possible
+            }
+            else{
+                return 0; // no match
+            }
+        }        
+
+        if(isdigit(inputCard[1])){ // 1~9 is not valid in attk 
+            return 0;
+        }
+        else if(inputCard[1]!='q' && inputCard[1] != 's' && inputCard[1]!='a'){ // if not ulti or attk card
+            return 0;
+        }
+    }
+}
+
+    
+        
     
 
-    
-} 
 int cardDeckCounter(card *cardDeck){
     int nullCount=0;
     while(1){
-        if(cardDeck[nullCount].used == 1){
+        if(cardDeck[nullCount].used >0){ // 1 or 2
             nullCount++;
         }
         else
@@ -1352,6 +1981,7 @@ void storePlayerRoomInfo(int players[], userInfo *playerinfo){
                 playerinfo[i].username=malloc(sizeof(char)*(strlen(currentUsers[j].username)+1));
                 strcpy(playerinfo[i].username,currentUsers[j].username);
                 playerinfo[i].cardCount=0;  //default 0 cards
+                playerinfo[i].warning=0;//default no warning
                 break;
             }
         }
@@ -1366,9 +1996,15 @@ void shuffleCard(card* cardDeck){
     int shuffleCount = 100;
     int pickNum;
     int pickNum2;
-    if(cardDeck[0].used !=0){ //shuffle function activate onlt when used is 100% 0 or 1 
+    int unreturnedCard=totalCardStyle*totalCardType;
+    int reshuffle=0;
+    if(cardDeck[0].used !=0){ //shuffle function activate onlt when used is 100% 0 or 1,2 
+        reshuffle=1;// this is reshuffle
         for(int i=0;i<(totalCardStyle*totalCardType);i++){
-            cardDeck[i].used = 0;
+            if(cardDeck[i].used==2){//card returned from client
+                cardDeck[i].used = 0;
+                unreturnedCard--;
+            }
         }
     }
 
@@ -1388,6 +2024,36 @@ void shuffleCard(card* cardDeck){
         cardDeck[pickNum2]=tmp;
 
     }
+    if(reshuffle){
+        //organizing 1 and 2
+        int searchPoint=0;
+        int resortCount=0;
+        for(int i=totalCardType*totalCardStyle-1;i>-1;i--){ // from end to start
+            if(cardDeck[i].used==2){
+                continue;// skip 2 
+            }
+            else{ //100% 1
+                for(int j=searchPoint;j<totalCardType*totalCardStyle;j++){ //from start to end
+                    if(cardDeck[i].used==1){
+                        searchPoint++;
+                        continue;
+                    }
+                    else{//100% 2
+                        tmp=cardDeck[i];
+                        cardDeck[i]=cardDeck[j];
+                        cardDeck[j]=tmp;
+                        searchPoint++;
+                        resortCount++;
+                        if(resortCount==unreturnedCard){
+                            printf("card reshuffle complete >> cardDeck ready\n");
+                            return;
+                        }
+                    } //exchange back 1 and front 2
+                }
+            }
+        }
+    }
+
     printf("card shuffle complete >> cardDeck ready\n");
 }
 /*
