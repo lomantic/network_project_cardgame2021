@@ -1,26 +1,3 @@
-/*
- * MIT License
- *
- * Copyright (c) 2018 Lewis Van Winkle
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -674,6 +651,11 @@ int menu(){
             purpose= atoi(userinput);
 
             if(purpose>0 &&purpose<4){
+                if(purpose ==3){
+                    printf("\nshop yet developed\n");
+                    sleep(1.2);
+                    break;
+                }
                 printf("your order >> %d confirmed \n",purpose);
                 return submenu(purpose);
             }
@@ -710,7 +692,8 @@ int submenu_cardgame(){
         printf("[command List]\n");
         printf("-match cardgame      : 1\n");
         printf("-match with computer : 2\n");
-        
+        printf("-help                : 3\n");
+
         while(1){
             printf("Your command >> type number: ");
             if(!fgets(userinput,sizeof userinput,stdin)){
@@ -721,7 +704,33 @@ int submenu_cardgame(){
         }
         else{
             purpose= atoi(userinput);
-            if(purpose>0 &&purpose<3){
+            if(purpose>0 &&purpose<4){
+                if(purpose == 2){
+                    printf("\nmatch with computer yet developed\n");
+                    sleep(1.2);
+                    break;
+                }
+                //manual
+                if(purpose ==3){
+                    system("clear");
+                    printf("Card type : R G B Y \n");
+                    printf("R : Red / G : Green / B : Blue / Y : Yellow\n\n");
+                    printf("Card style : 1~9 p j d a s q\n");
+                    printf("1~9 : number \n");
+                    printf("p : extra turn / j : jump / d : turn reverse\n");
+                    printf("a : weak attack / s : strong attack / q : ultimate\n\n");
+                    printf("Red ultimate : ultimate attack \n");
+                    printf("Green ultimate : reflect all attack\n");
+                    printf("Blue ultimate : block and disable all attack\n");
+                    printf("Yellow ultimate : skip turn or dodge attack  \n\n");
+                    printf("15+ card : card overflow kick out\n");
+                    printf("ignore turn 3 times : kick out \n\n");
+                    printf("press ENTER to go back to menu \n");
+                    if(fgets(userinput,sizeof userinput,stdin)){
+                        break;
+                    }                
+                }
+
                 printf("your order >> %d confirmed \n",purpose);
                 return purpose+100; // match code 101~102
             }
@@ -759,6 +768,12 @@ int submenu_myinfo(){
         else{
             purpose= atoi(userinput);
             if(purpose>0 &&purpose<5){
+                if(purpose == 3){
+                    printf("\ntitle yet developed\n");
+                    sleep(1.2);
+                    break;
+                }
+
                 printf("your order >> %d confirmed \n",purpose);
                 return purpose+200; // info code 201~202
             }

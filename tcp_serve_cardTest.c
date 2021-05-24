@@ -1,26 +1,4 @@
-/*
- * MIT License
- *
- * Copyright (c) 2018 Lewis Van Winkle
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -98,7 +76,9 @@ int deleteWaitingQueue(int client);
 
 
 static int connectedClient=0;
-const int MAX_CARD=15;
+
+const static int MAX_CLIENT_HISTORY_DATA =10;
+const static int MAX_CARD=15;
 const static int playerlimit=4;
 const static int userlimit=10;
 
@@ -116,7 +96,7 @@ typedef struct{
     char *username;
     int currnetRequest;
     char *title;
-    int playingStatus;
+    //int playingStatus; // forgot about this and made currnetPlayers.. whatever..
     int room;
 }userData;
 static userData *currentUsers; 
@@ -144,7 +124,8 @@ typedef struct{
     char *username;
     int cardCount;
     card *cardDeck;
-    int warning; // if 2 >>  forced out
+    int warning; // if 3 >>  forced out
+    int disquealified;
 }userInfo;
 
 typedef struct{
@@ -162,6 +143,14 @@ void cardToScreen(char outputScreen[],card currentCard);
 void cardsLeftInDeck(char commonScreen[],char cardLeft[]);
 int cardDeckCounter(card *cardDeck);
 
+
+void readGameHistory(char *filename,int clientNumber);
+void storeGameHistoryServer(int fileNumber,char *cardgameOneTurnData);
+int createHistoryFileInServer();
+int countHistoryFile(char *defaultPath);
+void copyHistoryFromServerToClient(char *username,int serverDataNumber);
+void screenMakerForServer(char *cardgameOneTurnData,userInfo *playerInfo,int playerCount);
+
 void deleteCurrnetPlayer(int clientNumber);
 void addSpecialOccastionMessage(char *playerScreen,int styleIdx,char *inputClient,int attkPoint);
 int surviverCheck(userInfo *playerInfo,int playerCount);
@@ -176,7 +165,7 @@ int checkClientCardExist(char inputCard[], card *playerDeck );
 void sendCardToClient(int cardCount,userInfo *playerInfo, card *cardDeck);
 int checkCardCount(int cardCount, userInfo playerinfo);
 void storePlayerRoomInfo(int players[], userInfo *playerinfo);
-void shuffleCard(card* cardDeck);
+void shuffleCard(card* cardDeck,int reshuffle); // 1>> reshuffle 0>> just shuffle
 static card *totalCard;
 const static int totalCardType=4;
 const static int totalCardStyle=15;
@@ -197,7 +186,7 @@ int main(int argc, char** argv) {
     for(int i=0;i<userlimit;i++){
         currentUsers[i].userNumber=-1; // default -1 means no client
         currentUsers[i].currnetRequest=-1;
-        currentUsers[i].playingStatus=0;
+        //currentUsers[i].playingStatus=0;
         currentUsers[i].room=-1;
         waitingLine[i]=-1;
         //printf("[%d] num is : %d\n",i,currentUsers[i].userNumber); test code
@@ -672,7 +661,7 @@ void storeClientInRoom(int roomNumber){
             continue;
         for(int j=0;j<playerlimit;j++){
             if(currentUsers[i].userNumber==playerSets[j]){
-                currentUsers[i].playingStatus=1;
+                //currentUsers[i].playingStatus=1;
                 currentUsers[i].room=roomNumber;
             }
         }
@@ -857,7 +846,7 @@ void *countdown(void *arg){
     int roomNumber = thread_data->roomNumber;
     int clientNumber = thread_data->clientNumber;
     //clientInputChecker[roomNumber-1]=0;
-    int timeLimit = 10; // default 20s
+    int timeLimit = 20; // default 20s
     sleep(1);
     for(int i=0; i < timeLimit; i++){
         printf("client %d >> counting %d  \n",clientNumber,timeLimit - i);
@@ -981,7 +970,7 @@ void *createCardGameRoom(void *roomNumber){
     
     card *usedCardDeck= malloc((sizeof(card))*(totalCardStyle*totalCardType));
     
-    shuffleCard(cardDeck);
+    shuffleCard(cardDeck,0);
 
     printf("1st deck created [%c%c] in room No. %d \n",cardDeck[0].cardType,cardDeck[0].cardStyle,roomNum);
     currentDeck = cardDeck[0];
@@ -1042,6 +1031,8 @@ void *createCardGameRoom(void *roomNumber){
     char startMessage[]="@ game start @\n";
     send(turn,startMessage, strlen(startMessage), 0);
 
+    int historyFileNumber = createHistoryFileInServer();
+    printf("HISTORY file : %d created \n",historyFileNumber);
     /*
     char client[200];
     strcpy(client,">>\n");
@@ -1110,7 +1101,7 @@ void *createCardGameRoom(void *roomNumber){
                     playerInfo[warnPlayerIdx].warning++;
                     readyActive=-1; // skip card check
                     //give warning and one card with force
-                    if((playerInfo[warnPlayerIdx].warning==2)||(playerInfo[warnPlayerIdx].cardCount==15||playerInfo[warnPlayerIdx].cardCount+attkPoint>15)){
+                    if((playerInfo[warnPlayerIdx].warning==3)||(playerInfo[warnPlayerIdx].cardCount==15||playerInfo[warnPlayerIdx].cardCount+attkPoint>15)){
                         survivers--;
                         char forcedExit[]="#* GET OUT *#\n";
                         send(playerInfo[warnPlayerIdx].userNumber,forcedExit,strlen(forcedExit),0);
@@ -1120,6 +1111,7 @@ void *createCardGameRoom(void *roomNumber){
                         printf("reconnect client : %d in room No. %d to main thread \n",playerInfo[warnPlayerIdx].userNumber,roomNum);
                         FD_SET(playerInfo[warnPlayerIdx].userNumber,&master);// reconnect with main thread
                         deleteCurrnetPlayer(playerInfo[warnPlayerIdx].userNumber);
+                        playerInfo[warnPlayerIdx].disquealified=1;
                         if(survivers==1){
                             gameover=2;
                         }
@@ -1160,6 +1152,7 @@ void *createCardGameRoom(void *roomNumber){
                     printf("reconnect client : %d in room No. %d to main thread \n",playerInfo[dropoutIdx].userNumber,roomNum);
                     FD_SET(playerInfo[dropoutIdx].userNumber,&master);// reconnect with main thread
                     deleteCurrnetPlayer(playerInfo[dropoutIdx].userNumber);
+                    playerInfo[dropoutIdx].disquealified=1;
                     if(survivers==1){
                         
                         gameover=2;
@@ -1381,6 +1374,7 @@ void *createCardGameRoom(void *roomNumber){
                 }
 
                 // observe all client in server
+                /*
                 printf("===================\n");
                 for(int idx=0;idx<playerCount;idx++){
                     printf("%s : ",playerInfo[idx].username);
@@ -1399,13 +1393,76 @@ void *createCardGameRoom(void *roomNumber){
                 printf("currnet deck card [%.*s] \n",2,read);
                 printf("\ncurrent turn : %d\n",turn);
                 printf("===================\n");
+                */
 
                 //file store code right here@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+                char commonScreen[100];
+                char currentDeckCard[20];
+                char cardgameOneTurnData[1024];
+                int nullCount=0;
+                int cardDeckLeft=0;
+                char cardLeft[3];
+                nullCount = cardDeckCounter(cardDeck);
+                cardDeckLeft = totalCardStyle*totalCardType -nullCount;
+                sprintf(cardLeft,"%d",cardDeckLeft);                
+                cardsLeftInDeck(commonScreen,cardLeft);
+                currnetCardInDeck(commonScreen,currentDeck);
+                strcpy(cardgameOneTurnData,commonScreen);
+                screenMakerForServer(cardgameOneTurnData,playerInfo,playerCount);
+                strcat(cardgameOneTurnData,"\n");
 
-                //here
+                // special card message create / detect special card info
+                int inputClientIdx=-1;
+                inputClientIdx =playerIdxFinder(playerInfo, i ,playerCount);
+                
+                char *specialOccasionClientName= playerInfo[inputClientIdx].username;
 
+                int specialOccasionCount=(int)(sizeof(specialOccasion)/sizeof(specialOccasion[0]));
+                int styleIdx=-1;
+                
+                for(int idx=0;idx<specialOccasionCount;idx++){
+                    if(specialOccasion[idx]==1){
+                        styleIdx=idx;
+                        break;
+                    }
+                }
+                if(styleIdx !=-1){
+                    addSpecialOccastionMessage(cardgameOneTurnData,styleIdx,specialOccasionClientName,attkPoint);
+                }
+                //observe all in server
+                printf("%s \n",cardgameOneTurnData);
+
+                //card deck test code
+                int zeros=0;
+                int ones =0;
+                int twos=0;
+                for(int card=0;card<60;card++){
+                    printf("%d ",cardDeck[card].used);
+                    if(cardDeck[card].used==0)
+                        zeros++;
+                    if(cardDeck[card].used==1)
+                        ones++;                        
+                    if(cardDeck[card].used==2)
+                        twos++;                
+                }
+                printf("\nkeeping cards : %d \n",zeros);
+                printf("clients card : %d\n",ones);
+                printf("returned card %d\n",twos);
+
+
+                //here store in file
+                storeGameHistoryServer(historyFileNumber,cardgameOneTurnData);
 
                 //active when gameover
+                if(gameover>0){
+                    for(int user=0; user<playerCount;user++){
+                        if(playerInfo[user].disquealified != 1){ // someone who exited or ignored turn won't get history
+                            copyHistoryFromServerToClient(playerInfo[user].username,historyFileNumber);
+                        }
+                    }
+                    
+                }
+
                 if(gameover ==1){ // game over some one used all cards
                     for(int idx=0;idx<playerCount;idx++){
                         if(playerInfo[idx].cardCount!=-1){
@@ -1443,41 +1500,17 @@ void *createCardGameRoom(void *roomNumber){
                     break;
                 }
                 
-                char commonScreen[100];
-                char currentDeckCard[20];
+
                 char **playerScreen=(char**)malloc((sizeof(char*))*playerCount);
                 for(int m=0;m<playerCount;m++){
                     playerScreen[m]=(char*)malloc(sizeof(char)*1024);
                 }
                 
-                // count cardDeck left
-                int nullCount=0;
-                int cardDeckLeft=0;
-                char cardLeft[3];
                 
 
-                nullCount = cardDeckCounter(cardDeck);
-                cardDeckLeft = totalCardStyle*totalCardType -nullCount;
-                sprintf(cardLeft,"%d",cardDeckLeft);
+                //screen maker for client materials same with screen maker for server
 
-                cardsLeftInDeck(commonScreen,cardLeft);
-                currnetCardInDeck(commonScreen,currentDeck);
                 playerScreenMaker(playerScreen,playerInfo,playerCount,commonScreen);
-                
-                // special card message create / detect special card info
-                int inputClientIdx=-1;
-                inputClientIdx =playerIdxFinder(playerInfo, i ,playerCount);
-                
-                char *specialOccasionClientName= playerInfo[inputClientIdx].username;
-
-                int specialOccasionCount=(int)(sizeof(specialOccasion)/sizeof(specialOccasion[0]));
-                int styleIdx=-1;
-                for(int idx=0;idx<specialOccasionCount;idx++){
-                    if(specialOccasion[idx]==1){
-                        styleIdx=idx;
-                        break;
-                    }
-                }
 
                 SOCKET j; // send message to others
                 
@@ -1525,7 +1558,7 @@ void *createCardGameRoom(void *roomNumber){
                     thread_data.clientNumber = turn;
 
                     printf("thread created countdown start\n");
-                    sleep(1);
+                    sleep(2);
                     if(survivers >1){
             	    status=pthread_create(&timeLimit_thread, NULL, countdown,(void *)&thread_data);
                     if(status==-1){
@@ -1588,6 +1621,10 @@ void sendDeckTurn(char information[],card currentDeck , int turn){
 }
 */
 
+void unproperPlayer(int unproperPlayerIdx,userInfo *playerInfo){ //disquealified of reading history data 
+    playerInfo[unproperPlayerIdx].disquealified=1;
+}
+
 void deleteCurrnetPlayer(int clientNumber){
 
     for(int i=0;i<userlimit;i++){
@@ -1608,7 +1645,7 @@ void addSpecialOccastionMessage(char *playerScreen,int styleIdx,char *inputClien
     char ATKPoint[4];
     sprintf(ATKPoint,"%d",attkPoint);
 
-    char specialOcassionMessage[100];
+    char specialOcassionMessage[200];
     switch (styleIdx){
         case 0:
             strcpy(specialOcassionMessage,"Jump from player : ");
@@ -1855,7 +1892,7 @@ int changeTurn(userInfo *playerInfo,int currentTurn,int playerCount){
 int checkClientCardExist(char inputCard[], card *playerDeck ){
 
     for (int i=0;i<MAX_CARD;i++){
-        if(playerDeck[i].used == 0){ // this space has card
+        if(playerDeck[i].used ==0){ // this space has card
             if((inputCard[0]==playerDeck[i].cardType)&&(inputCard[1]==playerDeck[i].cardStyle))
                 return i; //exist return position of selected card
             else
@@ -1868,8 +1905,9 @@ int checkClientCardExist(char inputCard[], card *playerDeck ){
 
 int checkClientCardValid(char inputCard[], card currentDeck,int attkPoint){
 
-    if(inputCard[0]=='Y' && inputCard[1]=='q')
+    if(inputCard[0]=='Y' && inputCard[1]=='q'){
         return 1; //dodge always possible
+    }
 
     if(attkPoint==0){
         if((inputCard[0]==currentDeck.cardType)||(inputCard[1]==currentDeck.cardStyle)){
@@ -1917,12 +1955,20 @@ int checkClientCardValid(char inputCard[], card currentDeck,int attkPoint){
 int cardDeckCounter(card *cardDeck){
     int nullCount=0;
     while(1){
+
+
         if(cardDeck[nullCount].used >0){ // 1 or 2
             nullCount++;
         }
-        else
+        else{
             break;
-
+        }
+        /*
+        if(nullCount==totalCardStyle*totalCardType){
+            shuffleCard(cardDeck,1);
+            break;    
+        }
+        */
     }
     return nullCount;
 }
@@ -1934,18 +1980,18 @@ void sendCardToClient(int cardCount, userInfo *playerInfo, card *cardDeck){
     nullCount = cardDeckCounter(cardDeck);
 
     int checkpoint=0;
-    for(int i=0;i<cardCount;i++){
+    for(int i=0;i<cardCount;i++){ // how many cards to sendZ
         for(int j=checkpoint;j<MAX_CARD;j++){
             if(playerInfo->cardDeck[j].used== -1){
                 playerInfo->cardDeck[j]=cardDeck[nullCount];
                 cardDeck[nullCount].used =1;//gave card to client >>used
                 playerInfo->cardCount=(playerInfo->cardCount)+1;
                 nullCount++;
-                if(nullCount==totalCardStyle*totalCardType){
+                if(nullCount>=totalCardStyle*totalCardType){
                     printf("cardDeck empty reshuffle active\n");
-                    shuffleCard(cardDeck);
-                    checkpoint=0;
-                    nullCount=0; // deck initialized
+                    shuffleCard(cardDeck,1);
+                    //checkpoint=0;
+                    nullCount=cardDeckCounter(cardDeck); // deck initialized
                 }
                 else{
                 checkpoint=j+1;// not to check from the start
@@ -1982,6 +2028,7 @@ void storePlayerRoomInfo(int players[], userInfo *playerinfo){
                 strcpy(playerinfo[i].username,currentUsers[j].username);
                 playerinfo[i].cardCount=0;  //default 0 cards
                 playerinfo[i].warning=0;//default no warning
+                playerinfo[i].disquealified=0;
                 break;
             }
         }
@@ -1989,7 +2036,7 @@ void storePlayerRoomInfo(int players[], userInfo *playerinfo){
     return;
 }
 
-void shuffleCard(card* cardDeck){
+void shuffleCard(card* cardDeck,int reshuffle){
     srand(time(NULL));
 
     card tmp;
@@ -1997,16 +2044,16 @@ void shuffleCard(card* cardDeck){
     int pickNum;
     int pickNum2;
     int unreturnedCard=totalCardStyle*totalCardType;
-    int reshuffle=0;
-    if(cardDeck[0].used !=0){ //shuffle function activate onlt when used is 100% 0 or 1,2 
-        reshuffle=1;// this is reshuffle
-        for(int i=0;i<(totalCardStyle*totalCardType);i++){
-            if(cardDeck[i].used==2){//card returned from client
-                cardDeck[i].used = 0;
-                unreturnedCard--;
-            }
+    
+    
+    
+    for(int i=0;i<(totalCardStyle*totalCardType);i++){
+        if(cardDeck[i].used==2){//card returned from client
+            cardDeck[i].used = 0;
+            unreturnedCard--;
         }
     }
+   
 
     for(int i=0;i<shuffleCount;i++){
         pickNum=random()%(totalCardStyle*totalCardType);
@@ -2024,21 +2071,34 @@ void shuffleCard(card* cardDeck){
         cardDeck[pickNum2]=tmp;
 
     }
+
+
     if(reshuffle){
-        //organizing 1 and 2
-        int searchPoint=0;
-        int resortCount=0;
+        //organizing 1 and 0  111111111100000000 is what i want
+        //oreder in decending order
+        for(int i=0; i<totalCardStyle*totalCardType;i++){
+            for(int j=i+1;j<totalCardStyle*totalCardType;j++){
+                if(cardDeck[i].used<cardDeck[j].used){
+                    tmp = cardDeck[i];
+                    cardDeck[i]=cardDeck[j];
+                    cardDeck[j]=tmp;
+                }
+            }
+        }
+
+    /*
         for(int i=totalCardType*totalCardStyle-1;i>-1;i--){ // from end to start
             if(cardDeck[i].used==2){
+                cardDeck[i].used =0;
                 continue;// skip 2 
             }
             else{ //100% 1
-                for(int j=searchPoint;j<totalCardType*totalCardStyle;j++){ //from start to end
-                    if(cardDeck[i].used==1){
+                for(int j=searchPoint;j<i;j++){ //from start to end
+                    if(cardDeck[j].used==1){
                         searchPoint++;
                         continue;
                     }
-                    else{//100% 2
+                    else{//100% 0
                         tmp=cardDeck[i];
                         cardDeck[i]=cardDeck[j];
                         cardDeck[j]=tmp;
@@ -2052,6 +2112,7 @@ void shuffleCard(card* cardDeck){
                 }
             }
         }
+    */
     }
 
     printf("card shuffle complete >> cardDeck ready\n");
@@ -2066,6 +2127,209 @@ void signalDetection(int sig){
     }   
 }
 */
+void screenMakerForServer(char *cardgameOneTurnData,userInfo *playerInfo,int playerCount){
+    // after cardsLeftInDeck();
+    // after currentDeck();
+    for(int i=0; i<playerCount;i++){
+        if(playerInfo[i].cardCount!=-1){
+            printCard(cardgameOneTurnData,playerInfo[i]);
+        }
+        else{
+            strcat(cardgameOneTurnData,"=================\n");
+            strcat(cardgameOneTurnData,playerInfo[i].username);
+            strcat(cardgameOneTurnData," : ");
+            strcat(cardgameOneTurnData," R.I.P :( \n");
+        }
+    }
+    //before addspecialOccastionMessage();
+}
+
+void copyHistoryFromServerToClient(char *username,int serverDataNumber){
+    FILE *fptr;
+    char serverPath[30];
+    char clientPath[50];
+    char numberToString[4];
+    
+    //server side
+    strcpy(serverPath,"./CARDGAME_DATA/");   // ./CARDGAME_DATA/filenumber
+    sprintf(numberToString,"%d",serverDataNumber);
+    strcat(serverPath,numberToString);  
+
+    //client side
+    
+
+    strcpy(clientPath,"./USER_DATA/"); // ./USER_DATA/username/history/filename
+    strcat(clientPath,username);
+    strcat(clientPath,"/history");
+    int clientHistoryFileCount = countHistoryFile(clientPath) ; 
+
+    if(clientHistoryFileCount == MAX_CLIENT_HISTORY_DATA){
+        printf("client storage full \n");
+        return ;
+    }
+    strcat(clientPath,"/");
+    sprintf(numberToString,"%d",clientHistoryFileCount);
+    strcat(clientPath,numberToString);
+
+    char copyCommand[40];
+    strcpy(copyCommand,"cp "); // cp serverData clientData(renamed)
+    strcat(copyCommand,serverPath);
+    strcat(copyCommand," ");
+    strcat(copyCommand,clientPath);
+    system(copyCommand);
+
+    printf("copy server data to client dir complete \n");
+    return ;    
+}
+
+int countHistoryFile(char *defaultPath){
+
+    DIR *directory;
+    struct dirent *dir;
+    int fileNum=0;
+    directory = opendir((const char *)defaultPath);// CARDGAME_DATA or USER_DATA
+
+    if(directory){
+        while((dir = readdir(directory))!= NULL){
+            fileNum++;
+        }
+    }
+    else{
+        printf("FATAL ERROR DIR NOT FOUND\n");
+        exit(1);
+    }
+    return fileNum -1; // always start with 2
+    /* old code
+    FILE *fptr;
+    char path[30];
+    int fileNum=0;
+    char numberToString[4];
+    while(1){
+        strcpy(path,defaultPath);
+        sprintf(numberToString,"%d",fileNum);
+        strcat(path,numberToString);
+        
+        if(access((const char*)path, R_OK|W_OK)){
+            //file exist
+            fileNum++;
+            continue;
+        }
+        else{
+            fclose(fptr);
+            return fileNum;
+        }
+    } 
+    */   
+}
+
+int createHistoryFileInServer(){
+    FILE *fptr;
+    int fileNum;
+    char path[30];
+    char numberToString[4];
+
+    fileNum=countHistoryFile("./CARDGAME_DATA");
+    strcpy(path,"./CARDGAME_DATA/");   // defaultPath/filenumber
+    sprintf(numberToString,"%d",fileNum);
+    strcat(path,numberToString);   
+
+    
+    fptr = fopen(path,"w");
+    if(fptr==NULL){
+        printf("file >> %s creation error \n",path);
+        exit(1);
+    }
+    printf("history file >> %s is created..\n",path);
+    char fileMode[]="0744";
+    int mode ;
+    mode =strtol(fileMode,0,8);
+    if(chmod(path,mode)<0){
+        printf("FATAL ERROR in changing mode\n");
+        printf("mode change failed\n");
+        exit(1);
+    }
+    fclose(fptr);
+    return fileNum;            
+        
+    
+}
+
+void storeGameHistoryServer(int fileNumber,char *cardgameOneTurnData){
+    FILE *fptr;
+    char path[30];
+    char numberToString[4];
+    strcpy(path,"./CARDGAME_DATA/");
+    sprintf(numberToString,"%d",fileNumber);
+    strcat(path,numberToString);    
+
+    fptr = fopen(path,"a");
+    if(fptr==NULL){
+        printf("file >> %s open error \n",path);
+        return ;
+    }
+
+
+    fputs(cardgameOneTurnData,fptr);
+    fputs("\n#\n",fptr); // # is mark of one turn
+    
+    fclose(fptr);
+    printf("Save complete! \n");
+    return ;
+
+}
+void readGameHistory(char *filename,int clientNumber){
+    FILE *fptr;
+    int clientIdx = clientIdxFinder(clientNumber);
+    char path[50];
+    strcpy(path,"./USER_DATA/"); // ./USER_DATA/username/history/filename
+    strcat(path,currentUsers[clientIdx].username);
+    strcat(path,"/history/");
+    strcat(path,filename);
+
+    fptr = fopen(path,"r");
+    if(fptr==NULL){
+        printf("file >> %s open error \n",path);
+        return ;
+    }
+    char word[2]="\0";
+    char turnData[1024];
+    char singleWord;
+    int wordCount=0;
+
+    while(singleWord!=EOF){
+        singleWord=fgetc(fptr);
+        word[0]=singleWord;
+        
+        if(word[0]=='#'){
+            word[0]='\0'; // cut
+            strcat(turnData,word);
+
+            printf("send %d bytes to client %d\n",wordCount,clientNumber);
+            send(clientNumber,turnData, strlen(turnData), 0);
+            wordCount=0;
+            sleep(3.3);
+            continue;
+        }
+        else{
+            if(wordCount==0){
+                strcpy(turnData,word);
+                wordCount++;
+                continue;
+            }
+
+            strcat(turnData,word);
+            wordCount++;
+        }
+    }    
+    fclose(fptr);
+    char readComplete[]="(Read Complete)\n";
+    send(clientNumber,readComplete, strlen(readComplete), 0);
+
+    printf("read complete! \n");
+    return ;
+
+}
+
 int findDirectory(char username[]){
 
     DIR* dir;
@@ -2092,7 +2356,8 @@ int findDirectory(char username[]){
 void createDirectory(char username[]){
 
     char userData[]="./USER_DATA";
-    char path[12+strlen(username)+1];//./USER_DATA/+ strlen(username)+null
+    char historyDir[]="/history";
+    char path[12+strlen(username)+8+1];//./USER_DATA/+ strlen(username)+/history+null
     strcpy(path,userData);
     strcat(path,"/");
     strcat(path,username);
@@ -2101,7 +2366,17 @@ void createDirectory(char username[]){
     dirCreate=mkdir(path,0744);
     if(dirCreate==0){
         printf("DIR_PATH >> %s created\n",path);
+        strcat(path,historyDir);
+        dirCreate=mkdir(path,0744);
+        if(dirCreate==0){
+            
+            printf("HISORY DIR_PATH >> %s created\n",path);
+            return ;
+        }
+        else{
+            printf("HISORY DIR_PATH >> %s creation error..\n",path);
         return ;
+    }
     }
     else{
         printf("DIR_PATH >> %s creation error..\n",path);
